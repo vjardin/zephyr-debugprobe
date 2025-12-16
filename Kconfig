@@ -1,0 +1,124 @@
+# SPDX-License-Identifier: MIT
+# Debugprobe Zephyr Port - Kconfig
+
+mainmenu "Debugprobe Zephyr Configuration"
+
+config DEBUGPROBE
+	bool "Enable Debug Probe functionality"
+	default y
+	help
+	  Enable the debug probe CMSIS-DAP and UART bridge functionality.
+
+config DEBUGPROBE_CDC_UART
+	bool "Enable CDC UART bridge"
+	default y
+	depends on DEBUGPROBE
+	help
+	  Enable USB CDC to UART bridge functionality.
+
+config DEBUGPROBE_DAP
+	bool "Enable CMSIS-DAP interface"
+	default y
+	depends on DEBUGPROBE
+	help
+	  Enable CMSIS-DAP debug interface for SWD debugging.
+
+config DEBUGPROBE_PIO_SWD
+	bool "Use PIO for high-speed SWD"
+	default y
+	depends on DEBUGPROBE_DAP && SOC_RP2040
+	help
+	  Use RP2040's Programmable I/O (PIO) for high-speed SWD operations.
+	  This provides significantly better performance than GPIO bit-banging.
+	  When disabled, GPIO bit-banging is used instead.
+
+config DEBUGPROBE_UART_BAUDRATE
+	int "Default UART baudrate"
+	default 115200
+	depends on DEBUGPROBE_CDC_UART
+	help
+	  Default baudrate for the UART bridge.
+
+config DEBUGPROBE_DAP_CLOCK_HZ
+	int "DAP SWD clock frequency (Hz)"
+	default 1000000
+	depends on DEBUGPROBE_DAP
+	help
+	  SWD clock frequency in Hz. Default is 1MHz.
+
+config DEBUGPROBE_TX_LED
+	bool "Enable TX LED indicator"
+	default y
+	help
+	  Enable LED indicator for UART TX activity.
+
+config DEBUGPROBE_RX_LED
+	bool "Enable RX LED indicator"
+	default y
+	help
+	  Enable LED indicator for UART RX activity.
+
+config DEBUGPROBE_DAP_LED
+	bool "Enable DAP activity LED"
+	default y
+	help
+	  Enable LED indicator for DAP/SWD activity.
+
+config DEBUGPROBE_AUTOBAUD
+	bool "Enable auto-baud detection"
+	default y
+	depends on DEBUGPROBE_CDC_UART
+	help
+	  Enable automatic baud rate detection for UART.
+
+config DEBUGPROBE_USB_VID
+	hex "USB Vendor ID"
+	default 0x2E8A
+	help
+	  USB Vendor ID for the debug probe.
+
+config DEBUGPROBE_USB_PID
+	hex "USB Product ID"
+	default 0x000C
+	help
+	  USB Product ID for the debug probe.
+
+# Thread priorities (higher value = higher priority in Zephyr)
+config DEBUGPROBE_UART_THREAD_PRIORITY
+	int "UART thread priority"
+	default 5
+	help
+	  Priority for the UART bridge thread.
+
+config DEBUGPROBE_DAP_THREAD_PRIORITY
+	int "DAP thread priority"
+	default 4
+	help
+	  Priority for the DAP handler thread.
+
+config DEBUGPROBE_USB_THREAD_PRIORITY
+	int "USB thread priority"
+	default 6
+	help
+	  Priority for the USB handler thread.
+
+# Stack sizes
+config DEBUGPROBE_UART_STACK_SIZE
+	int "UART thread stack size"
+	default 1024
+	help
+	  Stack size for UART thread.
+
+config DEBUGPROBE_DAP_STACK_SIZE
+	int "DAP thread stack size"
+	default 1024
+	help
+	  Stack size for DAP thread.
+
+config DEBUGPROBE_USB_STACK_SIZE
+	int "USB thread stack size"
+	default 1024
+	help
+	  Stack size for USB thread.
+
+source "Kconfig.zephyr"

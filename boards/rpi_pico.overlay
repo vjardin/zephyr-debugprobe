@@ -1,0 +1,76 @@
+/*
+ * SPDX-License-Identifier: MIT
+ *
+ * Debugprobe Zephyr Port - Device Tree Overlay for Raspberry Pi Pico
+ */
+
+/ {
+    chosen {
+        zephyr,console = &uart0;
+        zephyr,shell-uart = &uart0;
+    };
+
+    aliases {
+        led0 = &led0;
+        zephyr-udc0 = &usbd;
+    };
+
+    leds {
+        compatible = "gpio-leds";
+        led0: led_0 {
+            gpios = <&gpio0 25 GPIO_ACTIVE_HIGH>;
+            label = "User LED";
+        };
+    };
+
+};
+
+/* Debug UART for console */
+&uart0 {
+    status = "okay";
+    current-speed = <115200>;
+    pinctrl-0 = <&uart0_default>;
+    pinctrl-names = "default";
+};
+
+/* Bridge UART */
+&uart1 {
+    status = "okay";
+    current-speed = <115200>;
+    pinctrl-0 = <&uart1_default>;
+    pinctrl-names = "default";
+};
+
+/* Pin control */
+&pinctrl {
+    uart0_default: uart0_default {
+        group1 {
+            pinmux = <UART0_TX_P0>, <UART0_RX_P1>;
+        };
+    };
+
+    uart1_default: uart1_default {
+        group1 {
+            pinmux = <UART1_TX_P4>, <UART1_RX_P5>;
+        };
+    };
+};
+
+/* GPIO for SWD pins and LEDs */
+&gpio0 {
+    status = "okay";
+};
+
+/* USB Device with CDC ACM */
+&usbd {
+    status = "okay";
+
+    cdc_acm_uart0: cdc_acm_uart0 {
+        compatible = "zephyr,cdc-acm-uart";
+    };
+};
+
+/* PIO for high-speed SWD */
+&pio0 {
+    status = "okay";
+};
