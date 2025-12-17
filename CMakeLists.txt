@@ -9,20 +9,38 @@ find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 
 project(debugprobe_zephyr VERSION 1.0.0 LANGUAGES C)
 
-# Source files
+# Source files - always compiled
 target_sources(app PRIVATE
     src/main.c
-    src/cdc_uart.c
-    src/probe.c
-    src/dap.c
-    src/dap_vendor.c
-    src/swo.c
-    src/swdio.c
     src/get_serial.c
-    src/watchdog.c
-    src/debugprobe_usbd.c
-    src/usbd_dap.c
 )
+
+# USB device support (not available on native_sim)
+if(CONFIG_USB_DEVICE_STACK_NEXT)
+    target_sources(app PRIVATE
+        src/debugprobe_usbd.c
+        src/usbd_dap.c
+    )
+endif()
+
+# DAP support
+if(CONFIG_DEBUGPROBE_DAP)
+    target_sources(app PRIVATE
+        src/probe.c
+        src/dap.c
+        src/dap_vendor.c
+        src/swo.c
+        src/swdio.c
+        src/watchdog.c
+    )
+endif()
+
+# CDC UART support
+if(CONFIG_DEBUGPROBE_CDC_UART)
+    target_sources(app PRIVATE
+        src/cdc_uart.c
+    )
+endif()
 
 # PIO-based features for RP2040
 if(CONFIG_SOC_RP2040)

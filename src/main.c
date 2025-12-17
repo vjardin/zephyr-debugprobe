@@ -18,51 +18,76 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/uart.h>
-#include <zephyr/usb/usbd.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/ring_buffer.h>
 #include <string.h>
 
-#include "probe_config.h"
-#include "probe.h"
-#include "cdc_uart.h"
-#include "dap.h"
-#include "get_serial.h"
+#ifdef CONFIG_USB_DEVICE_STACK_NEXT
+#include <zephyr/usb/usbd.h>
 #include "usbd_init.h"
+#endif
+
+#include "probe_config.h"
+#ifdef CONFIG_DEBUGPROBE_DAP
+#include "probe.h"
+#include "dap.h"
+#endif
+#ifdef CONFIG_DEBUGPROBE_CDC_UART
+#include "cdc_uart.h"
+#endif
+#include "get_serial.h"
 
 LOG_MODULE_REGISTER(debugprobe, CONFIG_LOG_DEFAULT_LEVEL);
 
+#ifdef CONFIG_USB_DEVICE_STACK_NEXT
 /* Thread stacks */
+#ifdef CONFIG_DEBUGPROBE_CDC_UART
 K_THREAD_STACK_DEFINE(uart_thread_stack, UART_THREAD_STACK_SIZE);
+#endif
+#ifdef CONFIG_DEBUGPROBE_DAP
 K_THREAD_STACK_DEFINE(dap_thread_stack, DAP_THREAD_STACK_SIZE);
+#endif
 K_THREAD_STACK_DEFINE(usb_thread_stack, USB_THREAD_STACK_SIZE);
 
 /* Thread control blocks */
+#ifdef CONFIG_DEBUGPROBE_CDC_UART
 static struct k_thread uart_thread_data;
+#endif
+#ifdef CONFIG_DEBUGPROBE_DAP
 static struct k_thread dap_thread_data;
+#endif
 static struct k_thread usb_thread_data;
 
 /* Thread IDs */
+#ifdef CONFIG_DEBUGPROBE_CDC_UART
 static k_tid_t uart_tid;
+#endif
+#ifdef CONFIG_DEBUGPROBE_DAP
 static k_tid_t dap_tid;
+#endif
 static k_tid_t usb_tid;
 
 /* Synchronization primitives */
+#ifdef CONFIG_DEBUGPROBE_DAP
 K_SEM_DEFINE(dap_request_sem, 0, 1);
 K_SEM_DEFINE(dap_response_sem, 0, 1);
 
 /* DAP buffers */
 static uint8_t tx_data_buffer[CFG_TUD_HID_EP_BUFSIZE];
 static uint8_t rx_data_buffer[CFG_TUD_HID_EP_BUFSIZE];
+#endif
 
 /* Ring buffers for USB-UART bridge */
+#ifdef CONFIG_DEBUGPROBE_CDC_UART
 RING_BUF_DECLARE(uart_tx_ringbuf, USB_TX_BUF_SIZE);
 RING_BUF_DECLARE(uart_rx_ringbuf, USB_RX_BUF_SIZE);
-
-/* GPIO device - defined in probe.c, declared extern in DAP_config.h */
+#endif
 
 /* USB enabled flag */
 static volatile bool usb_configured = false;
+#endif /* CONFIG_USB_DEVICE_STACK_NEXT */
+
+/* GPIO device - defined in probe.c, declared extern in DAP_config.h */
 
 /*
  * LED Control
@@ -78,6 +103,7 @@ static void dap_led_set(bool on)
 #define dap_led_set(x) do {} while(0)
 #endif
 
+#ifdef CONFIG_USB_DEVICE_STACK_NEXT
 /*
  * USB Thread - Handles USB device tasks
  * Replaces: usb_thread() with xTaskCreate(usb_thread, "TUD", ...)
@@ -94,12 +120,13 @@ static void usb_thread_entry(void *p1, void *p2, void *p3)
         /* USB stack handling is done by Zephyr's workqueue
          * We just need to yield and let the USB subsystem work */
         k_sleep(K_MSEC(1));
-        
+
         /* Check USB configuration status */
         /* This is handled by Zephyr's USB stack callbacks */
     }
 }
 
+#ifdef CONFIG_DEBUGPROBE_DAP
 /*
  * DAP Thread - Processes DAP requests
  * Replaces: dap_thread() with xTaskCreate(dap_thread, "DAP", ...)
@@ -118,21 +145,23 @@ static void dap_thread_entry(void *p1, void *p2, void *p3)
             uint32_t response_len;
 
             dap_led_set(true);
-            
+
             /* Process DAP command */
-            response_len = dap_process_request(rx_data_buffer, 
+            response_len = dap_process_request(rx_data_buffer,
                                                sizeof(rx_data_buffer),
                                                tx_data_buffer,
                                                sizeof(tx_data_buffer));
-            
+
             /* Signal response ready */
             k_sem_give(&dap_response_sem);
-            
+
             dap_led_set(false);
         }
     }
 }
+#endif /* CONFIG_DEBUGPROBE_DAP */
 
+#ifdef CONFIG_DEBUGPROBE_CDC_UART
 /*
  * UART Thread - Handles CDC-UART bridge
  * Replaces: cdc_thread() with xTaskCreate(cdc_thread, "UART", ...)
@@ -150,12 +179,15 @@ static void uart_thread_entry(void *p1, void *p2, void *p3)
     while (1) {
         /* Handle UART <-> USB CDC bridge */
         cdc_uart_task();
-        
+
         /* Sleep to yield CPU - use short sleep for responsiveness */
         k_sleep(K_USEC(100));
     }
 }
+#endif /* CONFIG_DEBUGPROBE_CDC_UART */
+#endif /* CONFIG_USB_DEVICE_STACK_NEXT */
 
+#ifdef CONFIG_DEBUGPROBE_DAP
 /*
  * GPIO Initialization
  */
@@ -205,21 +237,27 @@ static int gpio_init_pins(void)
 
     return 0;
 }
+#endif /* CONFIG_DEBUGPROBE_DAP */
 
+#ifdef CONFIG_USB_DEVICE_STACK_NEXT
 /*
  * Suspend worker threads
  * Called when USB is disconnected/suspended to reduce power consumption
  */
 static void suspend_threads(void)
 {
+#ifdef CONFIG_DEBUGPROBE_CDC_UART
     if (uart_tid) {
         k_thread_suspend(uart_tid);
         LOG_DBG("UART thread suspended");
     }
+#endif
+#ifdef CONFIG_DEBUGPROBE_DAP
     if (dap_tid) {
         k_thread_suspend(dap_tid);
         LOG_DBG("DAP thread suspended");
     }
+#endif
 }
 
 /*
@@ -228,14 +266,18 @@ static void suspend_threads(void)
  */
 static void resume_threads(void)
 {
+#ifdef CONFIG_DEBUGPROBE_CDC_UART
     if (uart_tid) {
         k_thread_resume(uart_tid);
         LOG_DBG("UART thread resumed");
     }
+#endif
+#ifdef CONFIG_DEBUGPROBE_DAP
     if (dap_tid) {
         k_thread_resume(dap_tid);
         LOG_DBG("DAP thread resumed");
     }
+#endif
 }
 
 /* USB device context */
@@ -296,6 +338,7 @@ static void usb_msg_cb(struct usbd_context *const ctx,
         break;
     }
 }
+#endif /* CONFIG_USB_DEVICE_STACK_NEXT */
 
 /*
  * Main Entry Point
@@ -303,7 +346,6 @@ static void usb_msg_cb(struct usbd_context *const ctx,
  */
 int main(void)
 {
-    int ret;
     char serial[17];
 
     LOG_INF("Debug Probe (Zephyr) starting...");
@@ -313,6 +355,10 @@ int main(void)
     get_serial_string(serial, sizeof(serial));
     LOG_INF("Serial: %s", serial);
 
+#ifdef CONFIG_USB_DEVICE_STACK_NEXT
+    int ret;
+
+#ifdef CONFIG_DEBUGPROBE_DAP
     /* Initialize GPIO pins */
     ret = gpio_init_pins();
     if (ret < 0) {
@@ -323,6 +369,7 @@ int main(void)
     /* Initialize DAP */
     dap_init();
     LOG_INF("DAP initialized");
+#endif
 
     /* Initialize USB device with new stack */
     usbd_ctx = debugprobe_usbd_init(usb_msg_cb);
@@ -344,7 +391,7 @@ int main(void)
 
     /*
      * Create threads
-     * 
+     *
      * In FreeRTOS this was:
      *   xTaskCreate(usb_thread, "TUD", configMINIMAL_STACK_SIZE, NULL, TUD_TASK_PRIO, &tud_taskhandle);
      *   xTaskCreate(cdc_thread, "UART", configMINIMAL_STACK_SIZE, NULL, UART_TASK_PRIO, &uart_taskhandle);
@@ -352,7 +399,7 @@ int main(void)
      *
      * In Zephyr we use k_thread_create():
      */
-    
+
     /* USB thread always runs (manages USB stack) */
     usb_tid = k_thread_create(&usb_thread_data, usb_thread_stack,
                               K_THREAD_STACK_SIZEOF(usb_thread_stack),
@@ -360,22 +407,30 @@ int main(void)
                               USB_THREAD_PRIORITY, 0, K_NO_WAIT);
     k_thread_name_set(usb_tid, "usb_thread");
 
-    /* UART and DAP threads start suspended - resumed when USB is configured */
+#ifdef CONFIG_DEBUGPROBE_CDC_UART
+    /* UART thread starts suspended - resumed when USB is configured */
     uart_tid = k_thread_create(&uart_thread_data, uart_thread_stack,
                                K_THREAD_STACK_SIZEOF(uart_thread_stack),
                                uart_thread_entry, NULL, NULL, NULL,
                                UART_THREAD_PRIORITY, 0, K_NO_WAIT);
     k_thread_name_set(uart_tid, "uart_thread");
     k_thread_suspend(uart_tid);
+#endif
 
+#ifdef CONFIG_DEBUGPROBE_DAP
+    /* DAP thread starts suspended - resumed when USB is configured */
     dap_tid = k_thread_create(&dap_thread_data, dap_thread_stack,
                               K_THREAD_STACK_SIZEOF(dap_thread_stack),
                               dap_thread_entry, NULL, NULL, NULL,
                               DAP_THREAD_PRIORITY, 0, K_NO_WAIT);
     k_thread_name_set(dap_tid, "dap_thread");
     k_thread_suspend(dap_tid);
+#endif
 
-    LOG_INF("All threads created (UART/DAP suspended until USB configured)");
+    LOG_INF("All threads created");
+#else
+    LOG_INF("Running in simulation mode (no USB)");
+#endif /* CONFIG_USB_DEVICE_STACK_NEXT */
 
     /* Main loop - can be used for monitoring or additional tasks */
     while (1) {
@@ -386,6 +441,7 @@ int main(void)
     return 0;
 }
 
+#if defined(CONFIG_USB_DEVICE_STACK_NEXT) && defined(CONFIG_DEBUGPROBE_DAP)
 /*
  * DAP Request Handler
  * Called from USB HID/Bulk endpoint handler
@@ -398,10 +454,10 @@ void dap_handle_request(const uint8_t *request, uint32_t request_len,
     }
 
     memcpy(rx_data_buffer, request, request_len);
-    
+
     /* Signal DAP thread */
     k_sem_give(&dap_request_sem);
-    
+
     /* Wait for response */
     if (k_sem_take(&dap_response_sem, K_MSEC(1000)) == 0) {
         memcpy(response, tx_data_buffer, DAP_PACKET_SIZE);
@@ -412,7 +468,9 @@ void dap_handle_request(const uint8_t *request, uint32_t request_len,
         *response_len = 1;
     }
 }
+#endif /* CONFIG_USB_DEVICE_STACK_NEXT && CONFIG_DEBUGPROBE_DAP */
 
+#ifdef CONFIG_USB_DEVICE_STACK_NEXT
 /*
  * USB Configured Check
  */
@@ -420,3 +478,4 @@ bool is_usb_configured(void)
 {
     return usb_configured;
 }
+#endif /* CONFIG_USB_DEVICE_STACK_NEXT */

@@ -7,7 +7,6 @@
  */
 
 #include <zephyr/kernel.h>
-#include <zephyr/drivers/flash.h>
 #include <zephyr/sys/util.h>
 #include <zephyr/logging/log.h>
 #include <stdio.h>
@@ -39,7 +38,7 @@ void get_serial_string(char *serial, size_t max_len)
     }
 }
 
-#else
+#elif defined(CONFIG_HWINFO)
 
 /* Generic implementation using Zephyr's hwinfo if available */
 #include <zephyr/drivers/hwinfo.h>
@@ -48,15 +47,15 @@ void get_serial_string(char *serial, size_t max_len)
 {
     uint8_t device_id[16];
     ssize_t id_len;
-    
+
     /* Try to get hardware unique ID */
     id_len = hwinfo_get_device_id(device_id, sizeof(device_id));
-    
+
     if (id_len > 0) {
         /* Convert to hex string */
         size_t str_pos = 0;
         for (ssize_t i = 0; i < id_len && str_pos < (max_len - 2); i++) {
-            str_pos += snprintf(&serial[str_pos], max_len - str_pos, 
+            str_pos += snprintf(&serial[str_pos], max_len - str_pos,
                                "%02X", device_id[i]);
         }
         serial[str_pos] = '\0';
@@ -72,20 +71,34 @@ void get_serial_string(char *serial, size_t max_len)
     }
 }
 
-#endif
-
-/*
- * Get serial as raw bytes
- */
 size_t get_serial_raw(uint8_t *buffer, size_t max_len)
 {
-#if defined(CONFIG_SOC_SERIES_RP2XXX) || defined(CONFIG_SOC_FAMILY_RPI_PICO)
-    if (max_len >= 8) {
-        flash_get_unique_id(buffer);
-        return 8;
-    }
-    return 0;
-#else
     return hwinfo_get_device_id(buffer, max_len);
-#endif
 }
+
+#else
+
+/* Fallback for platforms without hwinfo (e.g., native_sim) */
+void get_serial_string(char *serial, size_t max_len)
+{
+    if (max_len >= 17) {
+        strncpy(serial, "SIMULATION000001", max_len - 1);
+        serial[max_len - 1] = '\0';
+    } else if (max_len >= 5) {
+        strncpy(serial, "SIM1", max_len - 1);
+        serial[max_len - 1] = '\0';
+    } else {
+        serial[0] = '\0';
+    }
+}
+
+size_t get_serial_raw(uint8_t *buffer, size_t max_len)
+{
+    /* Return a fixed ID for simulation */
+    const uint8_t sim_id[] = {0x53, 0x49, 0x4D, 0x00, 0x00, 0x00, 0x00, 0x01};
+    size_t len = MIN(max_len, sizeof(sim_id));
+    memcpy(buffer, sim_id, len);
+    return len;
+}
+
+#endif
