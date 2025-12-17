@@ -25,8 +25,10 @@ jobs:
         run: docker pull ghcr.io/zephyrproject-rtos/ci:v0.28.7
       - name: Initialize Zephyr workspace and build
         run: |
+          mkdir -p ${{ github.workspace }}/artifacts
           docker run --rm \
             -v ${{ github.workspace }}/debugprobe:/workdir/debugprobe \
+            -v ${{ github.workspace }}/artifacts:/workdir/artifacts \
             -w /workdir \
             ghcr.io/zephyrproject-rtos/ci:v0.28.7 \
             bash -c "
@@ -34,5 +36,12 @@ jobs:
               west update && \
               west zephyr-export && \
               west build -b rpi_pico -d build_rpi_pico debugprobe && \
-              west build -b rpi_pico/rp2040/w -d build_rpi_pico_w debugprobe
+              west build -b rpi_pico/rp2040/w -d build_rpi_pico_w debugprobe && \
+              cp build_rpi_pico/zephyr/zephyr.uf2 artifacts/debugprobe_rpi_pico.uf2 && \
+              cp build_rpi_pico_w/zephyr/zephyr.uf2 artifacts/debugprobe_rpi_pico_w.uf2
             "
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: ${{ github.workspace }}/artifacts/*.uf2
