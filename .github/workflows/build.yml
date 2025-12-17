@@ -10,7 +10,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/zephyrproject-rtos/ci:v0.25.9
+      image: ghcr.io/zephyrproject-rtos/ci:v0.28.7
       options: --user root
     steps:
       - name: Checkout
