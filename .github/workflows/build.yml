@@ -38,11 +38,13 @@ jobs:
               west build -b rpi_pico -d build_rpi_pico debugprobe && \
               west build -b rpi_pico/rp2040/w -d build_rpi_pico_w debugprobe && \
               west build -b rpi_pico2/rp2350a/m33 -d build_rpi_pico2 debugprobe && \
+              west build -b rpi_pico2/rp2350a/m33/w -d build_rpi_pico2_w debugprobe && \
               west build -b native_sim -d build_native_sim debugprobe && \
               west build -b ek_ra4m2 -d build_ek_ra4m2 debugprobe && \
               cp build_rpi_pico/zephyr/zephyr.uf2 artifacts/debugprobe_rpi_pico.uf2 && \
               cp build_rpi_pico_w/zephyr/zephyr.uf2 artifacts/debugprobe_rpi_pico_w.uf2 && \
               cp build_rpi_pico2/zephyr/zephyr.uf2 artifacts/debugprobe_rpi_pico2.uf2 && \
+              cp build_rpi_pico2_w/zephyr/zephyr.uf2 artifacts/debugprobe_rpi_pico2_w.uf2 && \
               cp build_ek_ra4m2/zephyr/zephyr.hex artifacts/debugprobe_ek_ra4m2.hex
             "
       - name: Upload firmware artifacts
