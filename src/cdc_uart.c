@@ -58,8 +58,8 @@ static volatile bool timed_break;
 /* Current baud rate */
 static uint32_t current_baudrate = PROBE_UART_BAUDRATE;
 
-/* Debounce timing */
-#define DEBOUNCE_TICKS  (LED_DEBOUNCE_MS / (1000 / CONFIG_SYS_CLOCK_TICKS_PER_SEC))
+/* Debounce timing - convert ms to ticks safely for any tick rate */
+#define DEBOUNCE_TICKS  (((uint64_t)LED_DEBOUNCE_MS * CONFIG_SYS_CLOCK_TICKS_PER_SEC) / 1000)
 
 /*
  * Software Flow Control
