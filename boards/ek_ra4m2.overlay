@@ -1,0 +1,27 @@
+/*
+ * SPDX-License-Identifier: MIT
+ *
+ * Debugprobe Zephyr Port - Device Tree Overlay for Renesas EK-RA4M2
+ *
+ * This is a minimal configuration for build verification.
+ * DAP/SWD requires GPIO bit-bang implementation (not yet ported).
+ * CDC UART bridge requires a second SCI to be configured.
+ */
+
+/ {
+	chosen {
+		zephyr,console = &uart0;
+		zephyr,shell-uart = &uart0;
+	};
+
+	aliases {
+		led0 = &led1;
+	};
+};
+
+/* Add CDC ACM UART to the USB device controller */
+&zephyr_udc0 {
+	cdc_acm_uart0: cdc_acm_uart0 {
+		compatible = "zephyr,cdc-acm-uart";
+	};
+};

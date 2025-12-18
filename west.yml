@@ -11,6 +11,7 @@ manifest:
         name-allowlist:
           - cmsis
           - cmsis_6
+          - hal_renesas
           - hal_rpi_pico
 
   self:
