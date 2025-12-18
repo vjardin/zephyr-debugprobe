@@ -191,21 +191,13 @@ int pio_swd_init(void)
     }
 
     /* Check if we can claim a state machine */
-    if (!pio_can_add_program(pio, &(pio_program_t){
-        .instructions = pio_swd_instructions,
-        .length = PIO_SWD_PROGRAM_LENGTH,
-        .origin = -1
-    })) {
+    if (!pio_can_add_program(pio, &pio_swd_program)) {
         LOG_ERR("Cannot add PIO program - no space");
         return -ENOMEM;
     }
 
     /* Add program to PIO */
-    pio_program_offset = pio_add_program(pio, &(pio_program_t){
-        .instructions = pio_swd_instructions,
-        .length = PIO_SWD_PROGRAM_LENGTH,
-        .origin = -1
-    });
+    pio_program_offset = pio_add_program(pio, &pio_swd_program);
 
     /* Initialize OE control if available */
     pio_swd_oe_init();
@@ -235,11 +227,7 @@ void pio_swd_deinit(void)
     pio_sm_set_enabled(pio, sm, false);
 
     /* Remove program */
-    pio_remove_program(pio, &(pio_program_t){
-        .instructions = pio_swd_instructions,
-        .length = PIO_SWD_PROGRAM_LENGTH,
-        .origin = pio_program_offset
-    }, pio_program_offset);
+    pio_remove_program(pio, &pio_swd_program, pio_program_offset);
 
     /* Reset GPIO to regular mode */
     gpio_set_function(PROBE_SWCLK_PIN, GPIO_FUNC_SIO);

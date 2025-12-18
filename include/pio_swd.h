@@ -14,10 +14,35 @@
 
 #ifdef CONFIG_SOC_RP2040
 
+#include <hardware/pio.h>
+#include "probe_config.h"
+
 /*
- * PIO SWD Program - Pre-assembled instructions
+ * PIO SWD Program
  *
- * Standard version (1-bit side-set for SWCLK only):
+ * If PIO_GENERATED_HEADERS is defined, use the pioasm-generated header.
+ * Otherwise, use pre-assembled instructions as fallback.
+ */
+#ifdef PIO_GENERATED_HEADERS
+/* Use pioasm-generated headers */
+#include "probe.pio.h"
+
+/* Map generated names to our internal names */
+#define pio_swd_program             probe_program
+#define pio_swd_program_instructions probe_program_instructions
+#define PIO_SWD_PROGRAM_LENGTH      (sizeof(probe_program_instructions) / sizeof(probe_program_instructions[0]))
+#define PIO_SWD_WRAP_TARGET         probe_wrap_target
+#define PIO_SWD_WRAP                probe_wrap
+
+/* Entry points from generated header */
+#define PIO_SWD_OFFSET_WRITE_CMD      probe_offset_write_cmd
+#define PIO_SWD_OFFSET_TURNAROUND_CMD probe_offset_turnaround_cmd
+#define PIO_SWD_OFFSET_GET_NEXT_CMD   probe_offset_get_next_cmd
+#define PIO_SWD_OFFSET_READ_CMD       probe_offset_read_cmd
+
+#else
+/*
+ * Pre-assembled PIO instructions (fallback when pioasm not available)
  *
  * .program probe
  * .side_set 1 opt
@@ -45,8 +70,7 @@
  * .wrap
  */
 
-/* Pre-assembled PIO instructions for SWD probe (standard, no OE) */
-static const uint16_t pio_swd_instructions[] = {
+static const uint16_t pio_swd_program_instructions[] = {
     /* 0: pull                       - write_cmd, turnaround_cmd */
     0x80a0,
     /* 1: out pins, 1 [1] side 0x0   - write_bitloop */
@@ -71,7 +95,14 @@ static const uint16_t pio_swd_instructions[] = {
     0x8020,
 };
 
-#define PIO_SWD_PROGRAM_LENGTH  ARRAY_SIZE(pio_swd_instructions)
+static const pio_program_t pio_swd_program = {
+    .instructions = pio_swd_program_instructions,
+    .length = ARRAY_SIZE(pio_swd_program_instructions),
+    .origin = -1,
+    .pio_version = 0,
+};
+
+#define PIO_SWD_PROGRAM_LENGTH  ARRAY_SIZE(pio_swd_program_instructions)
 #define PIO_SWD_WRAP_TARGET     3   /* get_next_cmd */
 #define PIO_SWD_WRAP            10  /* after push */
 
@@ -81,13 +112,15 @@ static const uint16_t pio_swd_instructions[] = {
 #define PIO_SWD_OFFSET_GET_NEXT_CMD   3
 #define PIO_SWD_OFFSET_READ_CMD       8
 
+#endif /* PIO_GENERATED_HEADERS */
+
 /* Command encoding for PIO FIFO */
 #define PIO_SWD_CMD_WRITE   PIO_SWD_OFFSET_WRITE_CMD
 #define PIO_SWD_CMD_READ    PIO_SWD_OFFSET_READ_CMD
 
 /* OE control availability - uses explicit GPIO control (not PIO side-set)
  * because OE pin may not be adjacent to SWCLK */
-#if (PROBE_IO_OEN >= 0)
+#if defined(PROBE_IO_OEN) && (PROBE_IO_OEN >= 0)
 #define PIO_SWD_HAS_OE_CONTROL  1
 #else
 #define PIO_SWD_HAS_OE_CONTROL  0

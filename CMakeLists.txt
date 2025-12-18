@@ -57,6 +57,36 @@ if(CONFIG_SOC_RP2040)
         src/pio_swd.c
         src/autobaud.c
     )
+
+    # PIO assembly compilation
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/pioasm.cmake)
+
+    # Generate PIO headers from .pio source files
+    set(PIO_GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/pio)
+    file(MAKE_DIRECTORY ${PIO_GENERATED_DIR})
+
+    pioasm_generate_header(
+        PIO_FILE ${CMAKE_CURRENT_SOURCE_DIR}/src/pio/probe.pio
+        OUTPUT_DIR ${PIO_GENERATED_DIR}
+    )
+
+    pioasm_generate_header(
+        PIO_FILE ${CMAKE_CURRENT_SOURCE_DIR}/src/pio/probe_oen.pio
+        OUTPUT_DIR ${PIO_GENERATED_DIR}
+    )
+
+    # Add generated headers as dependencies if pioasm is available
+    if(PIOASM_GENERATED)
+        add_dependencies(app probe_pio_header probe_oen_pio_header)
+        target_compile_definitions(app PRIVATE
+            PIO_GENERATED_HEADERS=1
+        )
+    endif()
+
+    # Add generated header directory to include path
+    target_include_directories(app PRIVATE
+        ${PIO_GENERATED_DIR}
+    )
 endif()
 
 # Include directories
