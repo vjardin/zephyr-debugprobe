@@ -1,0 +1,45 @@
+/*
+ * SPDX-License-Identifier: MIT
+ *
+ * Debugprobe Zephyr Port - Device Tree Overlay for native_sim (32-bit)
+ *
+ * This overlay enables virtual USB device support for testing
+ * the USB stack without real hardware using USB/IP and UVB (USB Virtual Bus).
+ */
+
+/* Remove the default native-posix-udc which doesn't support USB_DEVICE_STACK_NEXT */
+/delete-node/ &zephyr_udc0;
+
+/ {
+	chosen {
+		zephyr,console = &uart0;
+		zephyr,shell-uart = &uart0;
+	};
+
+	/* Virtual USB Host Controller with nested Virtual USB Device Controller */
+	zephyr_uhc0: uhc_vrt0 {
+		compatible = "zephyr,uhc-virtual";
+
+		zephyr_udc0: udc_vrt0 {
+			compatible = "zephyr,udc-virtual";
+			num-bidir-endpoints = <8>;
+			maximum-speed = "high-speed";
+		};
+	};
+
+	aliases {
+		zephyr-udc0 = &zephyr_udc0;
+	};
+};
+
+/* Enable uart1 for CDC UART bridge functionality */
+&uart1 {
+	status = "okay";
+};
+
+/* Add CDC ACM UART to the virtual USB device controller */
+&zephyr_udc0 {
+	cdc_acm_uart0: cdc_acm_uart0 {
+		compatible = "zephyr,cdc-acm-uart";
+	};
+};

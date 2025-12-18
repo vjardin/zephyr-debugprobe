@@ -15,12 +15,17 @@ target_sources(app PRIVATE
     src/get_serial.c
 )
 
-# USB device support (not available on native_sim)
+# USB device support
 if(CONFIG_USB_DEVICE_STACK_NEXT)
     target_sources(app PRIVATE
         src/debugprobe_usbd.c
-        src/usbd_dap.c
     )
+    # USBD DAP requires both USB and DAP to be enabled
+    if(CONFIG_DEBUGPROBE_DAP)
+        target_sources(app PRIVATE
+            src/usbd_dap.c
+        )
+    endif()
 endif()
 
 # DAP support
