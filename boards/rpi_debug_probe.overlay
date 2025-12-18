@@ -1,0 +1,64 @@
+/*
+ * SPDX-License-Identifier: MIT
+ *
+ * Debugprobe Zephyr Port - Device Tree Overlay for Official Raspberry Pi Debug Probe
+ *
+ * Official Debug Probe hardware with level shifters and dedicated SWD connector.
+ * Pin assignments match the original debugprobe firmware.
+ *
+ * LEDs (accent from base DTS):
+ *   - GPIO2:  Red LED (D1) - DAP activity
+ *   - GPIO7:  Green LED UART (D2)
+ *   - GPIO8:  Yellow LED UART (D3)
+ *   - GPIO15: Green LED DBUG (D4)
+ *   - GPIO16: Yellow LED DBUG (D5)
+ *
+ * SWD Interface:
+ *   - GPIO11: SWCLK
+ *   - GPIO12: SWDIO
+ *   - GPIO14: nRESET (directly active-low)
+ *   - GPIO10: OEN (level shifter output enable)
+ *   - GPIO13: DIR (level shifter direction)
+ *
+ * Target UART (directly active UART1 from base DTS on GP4/GP5)
+ */
+
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
+/ {
+    aliases {
+        led0 = &red_led;
+        zephyr-udc0 = &usbd;
+    };
+
+    /*
+     * SWD GPIO pin definitions for official Debug Probe hardware
+     * Uses level shifters with direction control
+     */
+    debugprobe_swd: debugprobe-swd {
+        compatible = "debugprobe-swd";
+
+        /* GP11 - SWCLK output */
+        swclk-gpios = <&gpio0 11 GPIO_ACTIVE_HIGH>;
+
+        /* GP12 - SWDIO bidirectional */
+        swdio-gpios = <&gpio0 12 GPIO_ACTIVE_HIGH>;
+
+        /* GP14 - nRESET output (directly active-low) */
+        reset-gpios = <&gpio0 14 GPIO_ACTIVE_LOW>;
+    };
+};
+
+/* USB Device with CDC ACM */
+&usbd {
+    status = "okay";
+
+    cdc_acm_uart0: cdc_acm_uart0 {
+        compatible = "zephyr,cdc-acm-uart";
+    };
+};
+
+/* PIO for high-speed SWD */
+&pio0 {
+    status = "okay";
+};
