@@ -190,19 +190,24 @@ static void uart_thread_entry(void *p1, void *p2, void *p3)
 #ifdef CONFIG_DEBUGPROBE_DAP
 /*
  * GPIO Initialization
+ *
+ * Note: gpio_dev is initialized by probe_gpio_init() in probe.c.
+ * It may be NULL on boards without gpio0 (e.g., RA4M2 uses ioport*).
  */
 static int gpio_init_pins(void)
 {
     int ret;
 
-    gpio_dev = DEVICE_DT_GET(DT_NODELABEL(gpio0));
-    if (!device_is_ready(gpio_dev)) {
-        LOG_ERR("GPIO device not ready");
-        return -ENODEV;
+    /* Configure SWD pins first - this also initializes gpio_dev */
+    ret = probe_gpio_init();
+    if (ret < 0) {
+        LOG_ERR("Failed to initialize probe GPIO");
+        return ret;
     }
 
+    /* Configure LED pins if gpio_dev is available */
 #ifdef CONFIG_DEBUGPROBE_DAP_LED
-    if (PROBE_DAP_LED >= 0) {
+    if (gpio_dev && PROBE_DAP_LED >= 0) {
         ret = gpio_pin_configure(gpio_dev, PROBE_DAP_LED, GPIO_OUTPUT_INACTIVE);
         if (ret < 0) {
             LOG_WRN("Failed to configure DAP LED pin");
@@ -211,7 +216,7 @@ static int gpio_init_pins(void)
 #endif
 
 #ifdef CONFIG_DEBUGPROBE_TX_LED
-    if (PROBE_UART_TX_LED >= 0) {
+    if (gpio_dev && PROBE_UART_TX_LED >= 0) {
         ret = gpio_pin_configure(gpio_dev, PROBE_UART_TX_LED, GPIO_OUTPUT_INACTIVE);
         if (ret < 0) {
             LOG_WRN("Failed to configure TX LED pin");
@@ -220,20 +225,13 @@ static int gpio_init_pins(void)
 #endif
 
 #ifdef CONFIG_DEBUGPROBE_RX_LED
-    if (PROBE_UART_RX_LED >= 0) {
+    if (gpio_dev && PROBE_UART_RX_LED >= 0) {
         ret = gpio_pin_configure(gpio_dev, PROBE_UART_RX_LED, GPIO_OUTPUT_INACTIVE);
         if (ret < 0) {
             LOG_WRN("Failed to configure RX LED pin");
         }
     }
 #endif
-
-    /* Configure SWD pins */
-    ret = probe_gpio_init();
-    if (ret < 0) {
-        LOG_ERR("Failed to initialize probe GPIO");
-        return ret;
-    }
 
     return 0;
 }

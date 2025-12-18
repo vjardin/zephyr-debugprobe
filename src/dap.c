@@ -534,11 +534,10 @@ static uint32_t dap_cmd_swj_pins(const uint8_t *request, uint8_t *response)
         pin_state |= (1 << 1);
     }
 
-    /* Bit 3: TDO - input from target */
+    /* Bit 3: TDO - input from target (only on legacy GPIO path) */
 #if PROBE_JTAG_TDO_AVAILABLE
-    {
-        const struct device *gpio = DEVICE_DT_GET(DT_NODELABEL(gpio0));
-        if (gpio_pin_get(gpio, PROBE_TDO_PIN)) {
+    if (gpio_dev != NULL) {
+        if (gpio_pin_get(gpio_dev, PROBE_TDO_PIN)) {
             pin_state |= (1 << 3);
         }
     }
@@ -546,9 +545,8 @@ static uint32_t dap_cmd_swj_pins(const uint8_t *request, uint8_t *response)
 
     /* Bit 7: nRESET - read back (open-drain, can be pulled low by target) */
 #ifdef PROBE_RESET_PIN
-    if (PROBE_RESET_PIN >= 0) {
-        const struct device *gpio = DEVICE_DT_GET(DT_NODELABEL(gpio0));
-        if (gpio_pin_get(gpio, PROBE_RESET_PIN)) {
+    if (gpio_dev != NULL && PROBE_RESET_PIN >= 0) {
+        if (gpio_pin_get(gpio_dev, PROBE_RESET_PIN)) {
             pin_state |= (1 << 7);
         }
     }

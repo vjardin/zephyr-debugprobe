@@ -34,18 +34,13 @@ LOG_MODULE_REGISTER(dap_vendor, CONFIG_LOG_DEFAULT_LEVEL);
 
 /*
  * Initialize vendor command subsystem
+ *
+ * Note: gpio_dev is initialized by probe_gpio_init() in probe.c.
+ * It may be NULL on boards without gpio0 (e.g., RA4M2 uses ioport*).
  */
 static void vendor_init(void)
 {
-    static bool initialized = false;
-
-    if (!initialized) {
-        gpio_dev = DEVICE_DT_GET(DT_NODELABEL(gpio0));
-        if (!device_is_ready(gpio_dev)) {
-            gpio_dev = NULL;
-        }
-        initialized = true;
-    }
+    /* gpio_dev is already initialized by probe.c - nothing to do here */
 }
 
 /*
