@@ -1,0 +1,91 @@
+/*
+ * SPDX-License-Identifier: MIT
+ *
+ * Debugprobe Zephyr Port - Device Tree Overlay for Raspberry Pi Pico 2 (RP2350)
+ *
+ * Pin-compatible with Pico, uses same GPIO assignments.
+ * RP2350 features enhanced PIO (3 blocks) and Cortex-M33 cores.
+ */
+
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/pinctrl/rpi-pico-rp2350a-pinctrl.h>
+
+/ {
+    chosen {
+        zephyr,console = &uart0;
+        zephyr,shell-uart = &uart0;
+    };
+
+    aliases {
+        led0 = &led0;
+        zephyr-udc0 = &usbd;
+    };
+
+    /*
+     * SWD GPIO pin definitions
+     * Used as fallback when PIO is not available or for compatibility
+     * PIO acceleration is used when available (see pio_swd.c)
+     */
+    debugprobe_swd: debugprobe-swd {
+        compatible = "debugprobe-swd";
+
+        /* GP2 - SWCLK output */
+        swclk-gpios = <&gpio0 2 GPIO_ACTIVE_HIGH>;
+
+        /* GP3 - SWDIO bidirectional */
+        swdio-gpios = <&gpio0 3 GPIO_ACTIVE_HIGH>;
+
+        /* GP6 - nRESET output (directly active-low) */
+        reset-gpios = <&gpio0 6 GPIO_ACTIVE_LOW>;
+    };
+};
+
+/* Debug UART for console */
+&uart0 {
+    status = "okay";
+    current-speed = <115200>;
+    pinctrl-0 = <&uart0_default>;
+    pinctrl-names = "default";
+};
+
+/* Bridge UART */
+&uart1 {
+    status = "okay";
+    current-speed = <115200>;
+    pinctrl-0 = <&uart1_default>;
+    pinctrl-names = "default";
+};
+
+/* Pin control */
+&pinctrl {
+    uart0_default: uart0_default {
+        group1 {
+            pinmux = <UART0_TX_P0>, <UART0_RX_P1>;
+        };
+    };
+
+    uart1_default: uart1_default {
+        group1 {
+            pinmux = <UART1_TX_P4>, <UART1_RX_P5>;
+        };
+    };
+};
+
+/* GPIO for SWD pins and LEDs */
+&gpio0 {
+    status = "okay";
+};
+
+/* USB Device with CDC ACM */
+&usbd {
+    status = "okay";
+
+    cdc_acm_uart0: cdc_acm_uart0 {
+        compatible = "zephyr,cdc-acm-uart";
+    };
+};
+
+/* PIO for high-speed SWD - RP2350 has 3 PIO blocks */
+&pio0 {
+    status = "okay";
+};
