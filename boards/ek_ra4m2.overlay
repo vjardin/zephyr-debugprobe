@@ -3,23 +3,207 @@
  *
  * Debugprobe Zephyr Port - Device Tree Overlay for Renesas EK-RA4M2
  *
- * This is a minimal configuration for build verification.
- * DAP/SWD requires GPIO bit-bang implementation (not yet ported).
- * CDC UART bridge requires a second SCI to be configured.
+ * ============================================================================
+ * HARDWARE SETUP GUIDE
+ * ============================================================================
+ *
+ * This overlay configures the EK-RA4M2 evaluation board as a debug probe with:
+ *   - USB CDC ACM for host communication (on-board USB connector)
+ *   - SCI9 UART for target UART bridge (directly from Arduino SPI header)
+ *   - GPIO bit-bang for SWD debugging (directly from Arduino digital header)
+ *
+ * ============================================================================
+ * PIN ACTIVE (No Additional Hardware Needed)
+ * ============================================================================
+ *
+ *   +-- Arduino Headers on EK-RA4M2 Board --+
+ *   |                                        |
+ *   |  Header J24 (directly usable):         |
+ *   |  +----------------------------------+  |
+ *   |  | Pin | Signal   | MCU   | Function | |
+ *   |  |-----|----------|-------|----------| |
+ *   |  | 4   | D11/MOSI | P602  | TXD9     | |  --> Target RXD
+ *   |  | 5   | D12/MISO | P601  | RXD9     | |  <-- Target TXD
+ *   |  | 7   | GND      | GND   | Ground   | |  --- Target GND
+ *   |  +----------------------------------+  |
+ *   |                                        |
+ *   |  Header J23 (directly usable):         |
+ *   |  +----------------------------------+  |
+ *   |  | Pin | Signal   | MCU   | Function | |
+ *   |  |-----|----------|-------|----------| |
+ *   |  | 3   | D2       | P304  | SWCLK    | |  --> Target SWCLK
+ *   |  | 5   | D4       | P106  | SWDIO    | |  <-> Target SWDIO
+ *   |  | 8   | D7       | P107  | nRESET   | |  --> Target nRESET
+ *   |  +----------------------------------+  |
+ *   |                                        |
+ *   +----------------------------------------+
+ *
+ * ============================================================================
+ * CONNECTION DIAGRAMS
+ * ============================================================================
+ *
+ * UART Bridge Connection:
+ *   +---------+                           +--------------+
+ *   | EK-RA4M2|                           | Target Board |
+ *   | J24-4   |--- (TXD9) ------------->  | UART RXD     |
+ *   | J24-5   |<-- (RXD9) --------------  | UART TXD     |
+ *   | J24-7   |--- (GND) ---------------  | GND          |
+ *   +---------+                           +--------------+
+ *
+ *   SWD Debug Connection:
+ *   +---------+                           +----------------+
+ *   | EK-RA4M2|                           | Target Board   |
+ *   | J23-3   |--- (SWCLK) ------------>  | SWCLK          |
+ *   | J23-5   |<-> (SWDIO) ------------>  | SWDIO          |
+ *   | J23-8   |--- (nRESET) ----------->  | nRESET (opt)   |
+ *   | GND     |--- (GND) -------------->  | GND            |
+ *   +---------+                           +----------------+
+ *
+ * ============================================================================
+ * 10-PIN CORTEX DEBUG CONNECTOR ADAPTER
+ * ============================================================================
+ *
+ * If your target uses a standard 10-pin Cortex Debug connector (1.27mm pitch),
+ * you can build a simple adapter cable:
+ *
+ *   Standard 10-pin Cortex Debug Connector Pinout:
+ *   +-------+-------+
+ *   |  VCC  | SWDIO |  Pin 1 = VCC (do NOT connect to EK-RA4M2)
+ *   |  GND  | SWCLK |  Pin 2 = SWDIO <-> J23-5 (P106)
+ *   |  GND  |  SWO  |  Pin 3 = GND   --- J23 GND or J24-7
+ *   |  KEY  | NC/TDI|  Pin 4 = SWCLK --> J23-3 (P304)
+ *   | nRESET|  GND  |  Pin 5 = GND
+ *   +-------+-------+  Pin 6 = SWO (not supported)
+ *                      Pin 10 = nRESET --> J23-8 (P107)
+ *
+ * ============================================================================
+ * WHAT TO BUY
+ * ============================================================================
+ *
+ * Minimum required:
+ *
+ *   1. Female-to-Female Dupont Jumper Wires (2.54mm pitch)
+ *      - Quantity: 6-8 wires (10cm or 20cm length)
+ *      - Example: search "dupont jumper wires female" on Amazon/AliExpress
+ *      - Use: Direct connection from Arduino headers to target
+ *
+ * Optional for Cortex Debug targets:
+ *
+ *   2. 10-pin 1.27mm IDC connector + ribbon cable
+ *      - For targets with standard ARM Cortex Debug connector
+ *      - Plus 2.54mm female headers to connect to EK-RA4M2
+ *
+ *   3. Tag-Connect TC2050-IDC or TC2030-IDC
+ *      - Pogo-pin adapter for targets with Tag-Connect footprint
+ *
+ * ============================================================================
+ * WIRING SUMMARY
+ * ============================================================================
+ *
+ * UART Bridge:
+ *   EK-RA4M2 Pin     Wire Color (suggest)    Target Pin
+ *   ------------     ------------------      ----------
+ *   J24-4 (TXD9)     Yellow or Orange   -->  RXD
+ *   J24-5 (RXD9)     Green              <--  TXD
+ *   J24-7 (GND)      Black              ---  GND
+ *
+ * SWD Debug:
+ *   EK-RA4M2 Pin     Wire Color (suggest)    Target Pin
+ *   ------------     ------------------      ----------
+ *   J23-3 (SWCLK)    Blue               -->  SWCLK
+ *   J23-5 (SWDIO)    White or Purple    <->  SWDIO
+ *   J23-8 (nRESET)   Gray               -->  nRESET
+ *   Any GND          Black              ---  GND
+ *
+ * ============================================================================
+ * IMPORTANT NOTES
+ * ============================================================================
+ *
+ * - This probe operates at 3.3V logic levels
+ * - Do NOT connect directly to 5V targets without level shifters!
+ * - Ensure target SWD pins are not active by on-board debugger
+ * - Some targets may require removing jumpers to isolate SWD from on-board debug
+ *
+ * ============================================================================
  */
+
+#include <zephyr/dt-bindings/gpio/gpio.h>
 
 / {
 	chosen {
-		zephyr,console = &uart0;
-		zephyr,shell-uart = &uart0;
+		/* Use USB CDC ACM for console instead of hardware UART */
+		zephyr,console = &cdc_acm_uart0;
+		zephyr,shell-uart = &cdc_acm_uart0;
 	};
 
 	aliases {
+		/* Activity LED - directly on-board user LED */
 		led0 = &led1;
+
+		/* UART for CDC bridge to target */
+		debugprobe-uart = &uart9;
+	};
+
+	/*
+	 * SWD GPIO pin definitions for bit-bang implementation
+	 * accent the existing Arduino digital header connection
+	 */
+	debugprobe_swd {
+		compatible = "gpio-keys";
+
+		swd_clk: swd_clk {
+			/* D2 = P304 (J23 pin 3) - SWCLK output */
+			gpios = <&ioport3 4 GPIO_ACTIVE_HIGH>;
+			label = "SWD Clock";
+		};
+
+		swd_dio: swd_dio {
+			/* D4 = P106 (J23 pin 5) - SWDIO bidirectional */
+			gpios = <&ioport1 6 GPIO_ACTIVE_HIGH>;
+			label = "SWD Data I/O";
+		};
+
+		swd_reset: swd_reset {
+			/* D7 = P107 (J23 pin 8) - nRESET output */
+			gpios = <&ioport1 7 GPIO_ACTIVE_LOW>;
+			label = "Target Reset";
+		};
 	};
 };
 
-/* Add CDC ACM UART to the USB device controller */
+/* Enable GPIO ports for SWD pins */
+&ioport1 {
+	status = "okay";
+};
+
+&ioport3 {
+	status = "okay";
+};
+
+/* Pin control for SCI9 UART on Arduino SPI header */
+&pinctrl {
+	sci9_default: sci9_default {
+		group1 {
+			/* TXD9 = P602 (J24 pin 4 / D11), RXD9 = P601 (J24 pin 5 / D12) */
+			psels = <RA_PSEL(RA_PSEL_SCI_9, 6, 2)>,  /* TXD9 - Port 6, Pin 2 */
+			        <RA_PSEL(RA_PSEL_SCI_9, 6, 1)>;  /* RXD9 - Port 6, Pin 1 */
+		};
+	};
+};
+
+/* Enable SCI9 for UART bridge to target */
+&sci9 {
+	status = "okay";
+	pinctrl-0 = <&sci9_default>;
+	pinctrl-names = "default";
+
+	uart9: uart {
+		current-speed = <115200>;
+		status = "okay";
+	};
+};
+
+/* USB Device with CDC ACM for console and DAP */
 &zephyr_udc0 {
 	cdc_acm_uart0: cdc_acm_uart0 {
 		compatible = "zephyr,cdc-acm-uart";
