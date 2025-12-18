@@ -5,6 +5,10 @@
 # Original: https://github.com/raspberrypi/debugprobe
 
 cmake_minimum_required(VERSION 3.20.0)
+
+# Add custom devicetree bindings (for debugprobe-swd)
+list(APPEND DTS_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
+
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 
 project(debugprobe_zephyr VERSION 1.0.0 LANGUAGES C)

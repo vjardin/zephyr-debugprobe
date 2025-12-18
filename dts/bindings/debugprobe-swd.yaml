@@ -1,0 +1,62 @@
+# SPDX-License-Identifier: MIT
+#
+# Debugprobe SWD Interface Devicetree Binding
+#
+# This binding defines the GPIO pins used for SWD (Serial Wire Debug)
+# bit-bang implementation. Supports multiple GPIO controllers.
+
+description: |
+  Debug probe SWD interface GPIO configuration.
+
+  This node defines the GPIO pins for SWD debugging:
+  - swclk: Serial Wire Clock (output)
+  - swdio: Serial Wire Data I/O (bidirectional)
+  - reset: Target reset (optional, active low)
+  - swdir: Direction control for level shifter (optional)
+
+  Example:
+    debugprobe_swd: debugprobe-swd {
+        compatible = "debugprobe-swd";
+        swclk-gpios = <&gpio0 2 GPIO_ACTIVE_HIGH>;
+        swdio-gpios = <&gpio0 3 GPIO_ACTIVE_HIGH>;
+        reset-gpios = <&gpio0 6 GPIO_ACTIVE_LOW>;
+    };
+
+compatible: "debugprobe-swd"
+
+properties:
+  swclk-gpios:
+    type: phandle-array
+    required: true
+    description: |
+      GPIO pin for SWD clock (SWCLK).
+      This is an output pin that generates the debug clock.
+
+  swdio-gpios:
+    type: phandle-array
+    required: true
+    description: |
+      GPIO pin for SWD data I/O (SWDIO).
+      This is a bidirectional pin for debug data.
+
+  reset-gpios:
+    type: phandle-array
+    description: |
+      GPIO pin for target reset (nRESET).
+      This is typically active-low and open-drain.
+      Optional - if not specified, reset functionality is disabled.
+
+  swdir-gpios:
+    type: phandle-array
+    description: |
+      GPIO pin for SWDIO direction control.
+      Used with level shifters that need explicit direction control.
+      High = output (to target), Low = input (from target).
+      Optional - only needed for certain hardware designs.
+
+  io-enable-gpios:
+    type: phandle-array
+    description: |
+      GPIO pin for I/O buffer enable.
+      Used to enable/disable level shifters or output buffers.
+      Optional - only needed for certain hardware designs.

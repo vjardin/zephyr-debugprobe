@@ -8,6 +8,9 @@
  * This implements the low-level SWD (Serial Wire Debug) interface.
  * The original used RP2040's PIO for fast bit-banging.
  * This Zephyr port provides both GPIO bit-bang and PIO options.
+ *
+ * GPIO pins are configured via devicetree using the "debugprobe-swd" binding,
+ * allowing support for multiple GPIO controllers (e.g., RA4M2 with ioport0-5).
  */
 
 #include <zephyr/kernel.h>
@@ -18,19 +21,66 @@
 
 #include "probe_config.h"
 #include "probe.h"
+
 #ifdef CONFIG_SOC_RP2040
 #include "pio_swd.h"
 #endif
 
 LOG_MODULE_REGISTER(probe, CONFIG_LOG_DEFAULT_LEVEL);
 
+/*
+ * Devicetree-based GPIO configuration
+ *
+ * This allows pins to be on different GPIO controllers, which is required
+ * for boards like RA4M2 where SWD pins span multiple ports.
+ */
+#define SWD_NODE DT_NODELABEL(debugprobe_swd)
+
+#if DT_NODE_EXISTS(SWD_NODE)
+/* GPIO specs from devicetree - supports multiple controllers */
+static const struct gpio_dt_spec swclk_gpio = GPIO_DT_SPEC_GET(SWD_NODE, swclk_gpios);
+static const struct gpio_dt_spec swdio_gpio = GPIO_DT_SPEC_GET(SWD_NODE, swdio_gpios);
+
+/* Optional pins - use _GET_OR with empty spec for optional properties */
+#if DT_NODE_HAS_PROP(SWD_NODE, reset_gpios)
+static const struct gpio_dt_spec reset_gpio = GPIO_DT_SPEC_GET(SWD_NODE, reset_gpios);
+#define HAS_RESET_GPIO 1
+#else
+#define HAS_RESET_GPIO 0
+#endif
+
+#if DT_NODE_HAS_PROP(SWD_NODE, swdir_gpios)
+static const struct gpio_dt_spec swdir_gpio = GPIO_DT_SPEC_GET(SWD_NODE, swdir_gpios);
+#define HAS_SWDIR_GPIO 1
+#else
+#define HAS_SWDIR_GPIO 0
+#endif
+
+#if DT_NODE_HAS_PROP(SWD_NODE, io_enable_gpios)
+static const struct gpio_dt_spec io_en_gpio = GPIO_DT_SPEC_GET(SWD_NODE, io_enable_gpios);
+#define HAS_IO_EN_GPIO 1
+#else
+#define HAS_IO_EN_GPIO 0
+#endif
+
+#define USE_DT_GPIO 1
+#else
+/* Fallback: no devicetree node - use legacy gpio0 approach */
+#define USE_DT_GPIO 0
+#endif
+
+/*
+ * GPIO device for LED control and legacy SWD fallback.
+ * This is always defined because LEDs (PROBE_DAP_LED, etc.)
+ * are controlled via gpio0 by main.c, dap_vendor.c, etc.
+ * The extern declaration is in DAP_config.h.
+ */
+const struct device *gpio_dev;
+
 /* PIO acceleration mode (RP2040 only) */
 #ifdef CONFIG_SOC_RP2040
 static bool use_pio_swd = false;
 #endif
-
-/* GPIO device - shared with DAP_config.h macros */
-const struct device *gpio_dev;
 
 /* Current SWD clock frequency */
 static uint32_t swj_clock = DAP_DEFAULT_SWJ_CLOCK;
@@ -67,47 +117,73 @@ static inline void clock_delay(void)
 }
 
 /*
- * Set SWDIO direction
+ * Set SWDIO direction - using devicetree GPIO specs
  */
 static inline void swdio_set_dir_out(void)
 {
+#if USE_DT_GPIO
+    gpio_pin_configure_dt(&swdio_gpio, GPIO_OUTPUT);
+#if HAS_SWDIR_GPIO
+    gpio_pin_set_dt(&swdir_gpio, 1);
+#endif
+#else
     gpio_pin_configure(gpio_dev, PROBE_SWDIO_PIN, GPIO_OUTPUT);
 #ifdef PROBE_SWDIR_PIN
     if (PROBE_SWDIR_PIN >= 0) {
         gpio_pin_set(gpio_dev, PROBE_SWDIR_PIN, 1);
     }
 #endif
+#endif
 }
 
 static inline void swdio_set_dir_in(void)
 {
+#if USE_DT_GPIO
+    gpio_pin_configure_dt(&swdio_gpio, GPIO_INPUT);
+#if HAS_SWDIR_GPIO
+    gpio_pin_set_dt(&swdir_gpio, 0);
+#endif
+#else
     gpio_pin_configure(gpio_dev, PROBE_SWDIO_PIN, GPIO_INPUT);
 #ifdef PROBE_SWDIR_PIN
     if (PROBE_SWDIR_PIN >= 0) {
         gpio_pin_set(gpio_dev, PROBE_SWDIR_PIN, 0);
     }
 #endif
+#endif
 }
 
 /*
- * SWCLK control
+ * SWCLK control - using devicetree GPIO specs
  */
 static inline void swclk_set(int val)
 {
+#if USE_DT_GPIO
+    gpio_pin_set_dt(&swclk_gpio, val);
+#else
     gpio_pin_set(gpio_dev, PROBE_SWCLK_PIN, val);
+#endif
 }
 
 /*
- * SWDIO control
+ * SWDIO control - using devicetree GPIO specs
  */
 static inline void swdio_set(int val)
 {
+#if USE_DT_GPIO
+    gpio_pin_set_dt(&swdio_gpio, val);
+#else
     gpio_pin_set(gpio_dev, PROBE_SWDIO_PIN, val);
+#endif
 }
 
 static inline int swdio_get(void)
 {
+#if USE_DT_GPIO
+    return gpio_pin_get_dt(&swdio_gpio);
+#else
     return gpio_pin_get(gpio_dev, PROBE_SWDIO_PIN);
+#endif
 }
 
 /*
@@ -115,7 +191,7 @@ static inline int swdio_get(void)
  */
 static inline void tdi_set(int val)
 {
-#if PROBE_JTAG_TDI_AVAILABLE
+#if PROBE_JTAG_TDI_AVAILABLE && !USE_DT_GPIO
     gpio_pin_set(gpio_dev, PROBE_TDI_PIN, val);
 #else
     ARG_UNUSED(val);
@@ -127,7 +203,7 @@ static inline void tdi_set(int val)
  */
 static inline int tdo_get(void)
 {
-#if PROBE_JTAG_TDO_AVAILABLE
+#if PROBE_JTAG_TDO_AVAILABLE && !USE_DT_GPIO
     return gpio_pin_get(gpio_dev, PROBE_TDO_PIN);
 #else
     return 0;
@@ -161,14 +237,100 @@ static inline int swd_read_bit(void)
 }
 
 /*
- * Initialize probe GPIO
+ * Initialize probe GPIO using devicetree configuration
  */
 int probe_gpio_init(void)
 {
     int ret;
 
+    /*
+     * Initialize gpio_dev for LED control (always uses gpio0).
+     * This is needed by main.c, dap_vendor.c, etc. even when
+     * SWD pins use devicetree-based multi-controller support.
+     */
+#if DT_NODE_EXISTS(DT_NODELABEL(gpio0))
     gpio_dev = DEVICE_DT_GET(DT_NODELABEL(gpio0));
     if (!device_is_ready(gpio_dev)) {
+        LOG_WRN("GPIO0 device not ready - LED control disabled");
+        gpio_dev = NULL;
+    }
+#else
+    gpio_dev = NULL;
+#endif
+
+#if USE_DT_GPIO
+    /* Verify SWCLK GPIO is ready */
+    if (!gpio_is_ready_dt(&swclk_gpio)) {
+        LOG_ERR("SWCLK GPIO device not ready");
+        return -ENODEV;
+    }
+
+    /* Verify SWDIO GPIO is ready */
+    if (!gpio_is_ready_dt(&swdio_gpio)) {
+        LOG_ERR("SWDIO GPIO device not ready");
+        return -ENODEV;
+    }
+
+    /* Configure SWCLK as output, initially low */
+    ret = gpio_pin_configure_dt(&swclk_gpio, GPIO_OUTPUT_INACTIVE);
+    if (ret < 0) {
+        LOG_ERR("Failed to configure SWCLK pin: %d", ret);
+        return ret;
+    }
+    LOG_DBG("SWCLK configured on %s pin %d",
+            swclk_gpio.port->name, swclk_gpio.pin);
+
+    /* Configure SWDIO as output initially */
+    ret = gpio_pin_configure_dt(&swdio_gpio, GPIO_OUTPUT_INACTIVE);
+    if (ret < 0) {
+        LOG_ERR("Failed to configure SWDIO pin: %d", ret);
+        return ret;
+    }
+    LOG_DBG("SWDIO configured on %s pin %d",
+            swdio_gpio.port->name, swdio_gpio.pin);
+
+#if HAS_RESET_GPIO
+    /* Configure reset pin if available */
+    if (gpio_is_ready_dt(&reset_gpio)) {
+        ret = gpio_pin_configure_dt(&reset_gpio, GPIO_OUTPUT_INACTIVE | GPIO_OPEN_DRAIN);
+        if (ret < 0) {
+            LOG_WRN("Failed to configure RESET pin: %d", ret);
+        } else {
+            LOG_DBG("RESET configured on %s pin %d",
+                    reset_gpio.port->name, reset_gpio.pin);
+        }
+    }
+#endif
+
+#if HAS_SWDIR_GPIO
+    /* Configure direction control pin if available */
+    if (gpio_is_ready_dt(&swdir_gpio)) {
+        ret = gpio_pin_configure_dt(&swdir_gpio, GPIO_OUTPUT_ACTIVE);
+        if (ret < 0) {
+            LOG_WRN("Failed to configure SWDIR pin: %d", ret);
+        } else {
+            LOG_DBG("SWDIR configured on %s pin %d",
+                    swdir_gpio.port->name, swdir_gpio.pin);
+        }
+    }
+#endif
+
+#if HAS_IO_EN_GPIO
+    /* Configure I/O enable pin if available */
+    if (gpio_is_ready_dt(&io_en_gpio)) {
+        ret = gpio_pin_configure_dt(&io_en_gpio, GPIO_OUTPUT_ACTIVE);
+        if (ret < 0) {
+            LOG_WRN("Failed to configure IO_EN pin: %d", ret);
+        } else {
+            LOG_DBG("IO_EN configured on %s pin %d",
+                    io_en_gpio.port->name, io_en_gpio.pin);
+        }
+    }
+#endif
+
+#else /* Legacy non-DT path */
+    /* gpio_dev already initialized above for LED control */
+    if (!gpio_dev) {
         LOG_ERR("GPIO device not ready");
         return -ENODEV;
     }
@@ -200,7 +362,7 @@ int probe_gpio_init(void)
 #ifdef PROBE_RESET_PIN
     /* Configure reset pin */
     if (PROBE_RESET_PIN >= 0) {
-        ret = gpio_pin_configure(gpio_dev, PROBE_RESET_PIN, 
+        ret = gpio_pin_configure(gpio_dev, PROBE_RESET_PIN,
                                  GPIO_OUTPUT_INACTIVE | GPIO_OPEN_DRAIN);
         if (ret < 0) {
             LOG_WRN("Failed to configure RESET pin");
@@ -217,6 +379,7 @@ int probe_gpio_init(void)
         }
     }
 #endif
+#endif /* USE_DT_GPIO */
 
     update_clock_delay();
 
@@ -231,7 +394,8 @@ int probe_gpio_init(void)
     }
 #endif
 
-    LOG_INF("Probe GPIO initialized");
+    LOG_INF("Probe GPIO initialized (devicetree: %s)",
+            USE_DT_GPIO ? "yes" : "no");
 
     return 0;
 }
@@ -321,22 +485,22 @@ uint8_t probe_swd_transfer(uint32_t request, uint32_t *data)
 
     /* APnDP bit */
     swd_write_bit((request >> 0) & 1);
-    
+
     /* RnW bit */
     swd_write_bit((request >> 1) & 1);
-    
+
     /* A[2:3] bits */
     swd_write_bit((request >> 2) & 1);
     swd_write_bit((request >> 3) & 1);
-    
+
     /* Parity bit */
     parity = ((request >> 0) & 1) ^ ((request >> 1) & 1) ^
              ((request >> 2) & 1) ^ ((request >> 3) & 1);
     swd_write_bit(parity);
-    
+
     /* Stop bit */
     swd_write_bit(0);
-    
+
     /* Park bit */
     swd_write_bit(1);
 
@@ -365,7 +529,7 @@ uint8_t probe_swd_transfer(uint32_t request, uint32_t *data)
                 val |= (bit << n);
                 parity ^= bit;
             }
-            
+
             /* Read parity */
             bit = swd_read_bit();
             if (parity != bit) {
@@ -373,7 +537,7 @@ uint8_t probe_swd_transfer(uint32_t request, uint32_t *data)
             } else if (data) {
                 *data = val;
             }
-            
+
             /* Turnaround */
             clock_delay();
             swclk_set(1);
@@ -387,7 +551,7 @@ uint8_t probe_swd_transfer(uint32_t request, uint32_t *data)
             clock_delay();
             swclk_set(0);
             swdio_set_dir_out();
-            
+
             /* Write data */
             val = data ? *data : 0;
             parity = 0;
@@ -396,11 +560,11 @@ uint8_t probe_swd_transfer(uint32_t request, uint32_t *data)
                 parity ^= (val & 1);
                 val >>= 1;
             }
-            
+
             /* Write parity */
             swd_write_bit(parity);
         }
-        
+
         /* Idle cycles */
         swdio_set(0);
         for (n = 0; n < 8; n++) {
@@ -420,21 +584,21 @@ uint8_t probe_swd_transfer(uint32_t request, uint32_t *data)
                 swclk_set(0);
             }
         }
-        
+
         /* Turnaround */
         clock_delay();
         swclk_set(1);
         clock_delay();
         swclk_set(0);
         swdio_set_dir_out();
-        
+
         if (!(request & DAP_TRANSFER_RnW)) {
             /* Write dummy data on WAIT/FAULT */
             for (n = 0; n < 33; n++) {
                 swd_write_bit(0);
             }
         }
-        
+
         /* Idle cycles */
         swdio_set(0);
         for (n = 0; n < 8; n++) {
@@ -462,12 +626,18 @@ uint8_t probe_swd_transfer(uint32_t request, uint32_t *data)
  */
 void probe_set_reset(bool assert)
 {
+#if USE_DT_GPIO && HAS_RESET_GPIO
+    /* Open drain: Active = assert (pull low), Inactive = release (float high) */
+    gpio_pin_set_dt(&reset_gpio, assert ? 1 : 0);
+    LOG_DBG("Reset %s", assert ? "asserted" : "released");
+#elif !USE_DT_GPIO
 #ifdef PROBE_RESET_PIN
     if (PROBE_RESET_PIN >= 0) {
         /* Open drain: 0 = assert (pull low), 1 = release (float high) */
         gpio_pin_set(gpio_dev, PROBE_RESET_PIN, assert ? 0 : 1);
         LOG_DBG("Reset %s", assert ? "asserted" : "released");
     }
+#endif
 #else
     ARG_UNUSED(assert);
 #endif
@@ -478,10 +648,14 @@ void probe_set_reset(bool assert)
  */
 void probe_port_enable(bool enable)
 {
+#if USE_DT_GPIO && HAS_IO_EN_GPIO
+    gpio_pin_set_dt(&io_en_gpio, enable ? 1 : 0);
+#elif !USE_DT_GPIO
 #ifdef PROBE_IO_OEN
     if (PROBE_IO_OEN >= 0) {
         gpio_pin_set(gpio_dev, PROBE_IO_OEN, enable ? 1 : 0);
     }
+#endif
 #endif
     swd_connected = enable;
     LOG_INF("SWD port %s", enable ? "enabled" : "disabled");
@@ -500,12 +674,20 @@ bool probe_is_connected(void)
  */
 void probe_pins_hiz(void)
 {
+#if USE_DT_GPIO
+    gpio_pin_configure_dt(&swclk_gpio, GPIO_INPUT);
+    gpio_pin_configure_dt(&swdio_gpio, GPIO_INPUT);
+#if HAS_RESET_GPIO
+    gpio_pin_configure_dt(&reset_gpio, GPIO_INPUT);
+#endif
+#else
     gpio_pin_configure(gpio_dev, PROBE_SWCLK_PIN, GPIO_INPUT);
     gpio_pin_configure(gpio_dev, PROBE_SWDIO_PIN, GPIO_INPUT);
 #ifdef PROBE_RESET_PIN
     if (PROBE_RESET_PIN >= 0) {
         gpio_pin_configure(gpio_dev, PROBE_RESET_PIN, GPIO_INPUT);
     }
+#endif
 #endif
     LOG_DBG("Probe pins in Hi-Z");
 }
@@ -515,8 +697,13 @@ void probe_pins_hiz(void)
  */
 void probe_pins_active(void)
 {
+#if USE_DT_GPIO
+    gpio_pin_configure_dt(&swclk_gpio, GPIO_OUTPUT_INACTIVE);
+    swdio_set_dir_out();
+#else
     gpio_pin_configure(gpio_dev, PROBE_SWCLK_PIN, GPIO_OUTPUT_INACTIVE);
     swdio_set_dir_out();
+#endif
     LOG_DBG("Probe pins active");
 }
 
@@ -559,6 +746,8 @@ void probe_write_bit(int bit)
  * For basic JTAG support, we bit-bang using available GPIO.
  * Note: Full JTAG requires TDI/TDO pins which may not be available
  * on all debug probe hardware configurations.
+ *
+ * Note: JTAG support currently uses legacy GPIO path only.
  */
 
 /* JTAG chain configuration */
@@ -575,6 +764,24 @@ int probe_jtag_init(void)
 {
     int ret;
 
+#if USE_DT_GPIO
+    /* Configure pins for JTAG mode using devicetree specs */
+    /* TCK = SWCLK, TMS = SWDIO */
+    ret = gpio_pin_configure_dt(&swclk_gpio, GPIO_OUTPUT_INACTIVE);
+    if (ret < 0) {
+        LOG_ERR("Failed to configure TCK pin");
+        return ret;
+    }
+
+    ret = gpio_pin_configure_dt(&swdio_gpio, GPIO_OUTPUT_INACTIVE);
+    if (ret < 0) {
+        LOG_ERR("Failed to configure TMS pin");
+        return ret;
+    }
+
+    /* Note: TDI/TDO not yet supported via devicetree */
+    LOG_INF("JTAG mode initialized (TDI/TDO not available in DT mode)");
+#else
     /* Configure pins for JTAG mode */
     /* TCK = SWCLK, TMS = SWDIO */
     ret = gpio_pin_configure(gpio_dev, PROBE_SWCLK_PIN, GPIO_OUTPUT_INACTIVE);
@@ -609,11 +816,13 @@ int probe_jtag_init(void)
     LOG_DBG("TDO pin configured (GP%d)", PROBE_TDO_PIN);
 #endif
 
+    LOG_INF("JTAG mode initialized (TDI/TDO %s)",
+            PROBE_JTAG_FULL_SUPPORT ? "available" : "not available");
+#endif
+
     jtag_device_count = 0;
     memset(jtag_ir_length, 0, sizeof(jtag_ir_length));
 
-    LOG_INF("JTAG mode initialized (TDI/TDO %s)",
-            PROBE_JTAG_FULL_SUPPORT ? "available" : "not available");
     return 0;
 }
 
@@ -622,6 +831,11 @@ int probe_jtag_init(void)
  */
 void probe_jtag_deinit(void)
 {
+#if USE_DT_GPIO
+    /* Put JTAG pins in high-Z state */
+    gpio_pin_configure_dt(&swclk_gpio, GPIO_INPUT);
+    gpio_pin_configure_dt(&swdio_gpio, GPIO_INPUT);
+#else
     /* Put JTAG pins in high-Z state */
     gpio_pin_configure(gpio_dev, PROBE_SWCLK_PIN, GPIO_INPUT);
     gpio_pin_configure(gpio_dev, PROBE_SWDIO_PIN, GPIO_INPUT);
@@ -633,6 +847,7 @@ void probe_jtag_deinit(void)
 #if PROBE_JTAG_TDO_AVAILABLE
     gpio_pin_configure(gpio_dev, PROBE_TDO_PIN, GPIO_INPUT);
 #endif
+#endif
 
     LOG_INF("JTAG mode deinitialized");
 }
@@ -642,7 +857,12 @@ void probe_jtag_deinit(void)
  */
 bool probe_jtag_available(void)
 {
+#if USE_DT_GPIO
+    /* JTAG TDI/TDO not yet supported via devicetree */
+    return false;
+#else
     return PROBE_JTAG_FULL_SUPPORT;
+#endif
 }
 
 /*

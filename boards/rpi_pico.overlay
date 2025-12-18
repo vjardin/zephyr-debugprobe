@@ -4,6 +4,8 @@
  * Debugprobe Zephyr Port - Device Tree Overlay for Raspberry Pi Pico
  */
 
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
 / {
     chosen {
         zephyr,console = &uart0;
@@ -23,6 +25,23 @@
         };
     };
 
+    /*
+     * SWD GPIO pin definitions
+     * Used as fallback when PIO is not available or for compatibility
+     * PIO acceleration is used when available (see pio_swd.c)
+     */
+    debugprobe_swd: debugprobe-swd {
+        compatible = "debugprobe-swd";
+
+        /* GP2 - SWCLK output */
+        swclk-gpios = <&gpio0 2 GPIO_ACTIVE_HIGH>;
+
+        /* GP3 - SWDIO bidirectional */
+        swdio-gpios = <&gpio0 3 GPIO_ACTIVE_HIGH>;
+
+        /* GP6 - nRESET output (directly active-low) */
+        reset-gpios = <&gpio0 6 GPIO_ACTIVE_LOW>;
+    };
 };
 
 /* Debug UART for console */

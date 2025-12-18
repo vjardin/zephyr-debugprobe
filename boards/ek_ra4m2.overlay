@@ -148,26 +148,17 @@
 	 * SWD GPIO pin definitions for bit-bang implementation
 	 * accent the existing Arduino digital header connection
 	 */
-	debugprobe_swd {
-		compatible = "gpio-keys";
+	debugprobe_swd: debugprobe-swd {
+		compatible = "debugprobe-swd";
 
-		swd_clk: swd_clk {
-			/* D2 = P304 (J23 pin 3) - SWCLK output */
-			gpios = <&ioport3 4 GPIO_ACTIVE_HIGH>;
-			label = "SWD Clock";
-		};
+		/* D2 = P304 (J23 pin 3) - SWCLK output */
+		swclk-gpios = <&ioport3 4 GPIO_ACTIVE_HIGH>;
 
-		swd_dio: swd_dio {
-			/* D4 = P106 (J23 pin 5) - SWDIO bidirectional */
-			gpios = <&ioport1 6 GPIO_ACTIVE_HIGH>;
-			label = "SWD Data I/O";
-		};
+		/* D4 = P106 (J23 pin 5) - SWDIO bidirectional */
+		swdio-gpios = <&ioport1 6 GPIO_ACTIVE_HIGH>;
 
-		swd_reset: swd_reset {
-			/* D7 = P107 (J23 pin 8) - nRESET output */
-			gpios = <&ioport1 7 GPIO_ACTIVE_LOW>;
-			label = "Target Reset";
-		};
+		/* D7 = P107 (J23 pin 8) - nRESET output (directly active-low) */
+		reset-gpios = <&ioport1 7 GPIO_ACTIVE_LOW>;
 	};
 };
 
