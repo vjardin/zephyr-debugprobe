@@ -149,13 +149,16 @@ export ZEPHYR_SDK_INSTALL_DIR=~/toolchains/zephyr-sdk
 Build:
 
 ```bash
-cd ~/dev/zephyr-debugprobe             # buildX
+cd path_to_zephyr                      # buildX
 source .venv/bin/activate              # buildX
+export ZEPHYR_BASE=~/dev/zephyr/zephyr/zephyr # buildX
+
+cd ~/dev/zephyr-debugprobe             # buildX
 export ZEPHYR_TOOLCHAIN_VARIANT=zephyr # buildX
 export ZEPHYR_SDK_INSTALL_DIR=~/toolchains/zephyr-sdk      # buildX
 
-# Build for Raspberry Pi Pico
-west build -b rpi_pico debugprobe      # buildX
+# Build for Raspberry Pi Pico debug probe
+west build -b rpi_debug_probe .        # buildX
 
 # Build for Raspberry Pi Pico W (use separate build directory)
 west build -b rpi_pico/rp2040/w -d build_pico_w debugprobe # buildX
@@ -164,6 +167,7 @@ west build -b rpi_pico/rp2040/w -d build_pico_w debugprobe # buildX
 Workspace structure:
 
 ```
+XXX TODO update it
 zephyr-debugprobe/
 ├── debugprobe/          # This project (manifest repo)
 ├── zephyr/              # Zephyr RTOS
