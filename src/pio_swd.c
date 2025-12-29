@@ -469,16 +469,33 @@ uint8_t pio_swd_transfer(uint32_t request, uint32_t *data)
  */
 #include <zephyr/shell/shell.h>
 
+/* Helper to count used instruction slots by scanning for non-zero instructions */
+static int count_used_instructions(PIO pio)
+{
+    int count = 0;
+    for (int i = 0; i < 32; i++) {
+        if (pio->instr_mem[i] != 0) {
+            count++;
+        }
+    }
+    return count;
+}
+
 /* Helper to print one PIO block status */
 static void print_pio_block_status(const struct shell *sh, PIO pio, int pio_num)
 {
     shell_print(sh, "PIO%d:", pio_num);
-    shell_print(sh, "  CTRL: 0x%08x", pio->ctrl);
+
+    /* Show instruction memory usage */
+    int used = count_used_instructions(pio);
+    shell_print(sh, "  Instructions: %d/32 used", used);
 
     /* Show which SMs are enabled */
+    int enabled_count = 0;
     for (int sm = 0; sm < 4; sm++) {
         bool enabled = (pio->ctrl & (1u << sm)) != 0;
         if (enabled) {
+            enabled_count++;
             uint32_t flevel = pio->flevel;
             uint tx_level = (flevel >> (sm * 8)) & 0xF;
             uint rx_level = (flevel >> (sm * 8 + 4)) & 0xF;
@@ -488,8 +505,11 @@ static void print_pio_block_status(const struct shell *sh, PIO pio, int pio_num)
                         sm, pc, tx_level, rx_level);
         }
     }
+    if (enabled_count == 0) {
+        shell_print(sh, "  No state machines enabled");
+    }
 
-    /* Show FDEBUG flags */
+    /* Show FDEBUG flags if any are set */
     uint32_t fdebug = pio->fdebug;
     if (fdebug) {
         shell_print(sh, "  FDEBUG: 0x%08x", fdebug);
