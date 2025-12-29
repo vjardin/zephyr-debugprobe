@@ -7,11 +7,11 @@
  * Pin assignments match the original debugprobe firmware.
  *
  * LEDs (accent from base DTS):
- *   - GPIO2:  Red LED (D1) - DAP activity
- *   - GPIO7:  Green LED UART (D2)
- *   - GPIO8:  Yellow LED UART (D3)
- *   - GPIO15: Green LED DBUG (D4)
- *   - GPIO16: Yellow LED DBUG (D5)
+ *   - GPIO2:  Red LED (D1) - USB connected indicator
+ *   - GPIO7:  Green LED UART (D2) - UART RX activity
+ *   - GPIO8:  Yellow LED UART (D3) - UART TX activity
+ *   - GPIO15: Green LED DBUG (D4) - DAP connected
+ *   - GPIO16: Yellow LED DBUG (D5) - DAP running
  *
  * SWD Interface:
  *   - GPIO11: SWCLK
@@ -26,9 +26,21 @@
 #include <zephyr/dt-bindings/gpio/gpio.h>
 
 / {
+    chosen {
+        /* Console over USB CDC ACM */
+        zephyr,console = &cdc_acm_uart0;
+        zephyr,shell-uart = &cdc_acm_uart0;
+    };
+
     aliases {
         led0 = &red_led;
         zephyr-udc0 = &usbd;
+        /* LED aliases for firmware */
+        led-usb-connected = &red_led;
+        led-uart-rx = &green_led_uart;
+        led-uart-tx = &yellow_led_uart;
+        led-dap-connected = &green_led_dbug;
+        led-dap-running = &yellow_led_dbug;
     };
 
     /*
@@ -49,7 +61,7 @@
     };
 };
 
-/* USB Device with CDC ACM */
+/* USB Device with CDC ACM for console and UART bridge */
 &usbd {
     status = "okay";
 

@@ -17,6 +17,7 @@ project(debugprobe_zephyr VERSION 1.0.0 LANGUAGES C)
 target_sources(app PRIVATE
     src/main.c
     src/get_serial.c
+    src/led.c
 )
 
 # USB device support

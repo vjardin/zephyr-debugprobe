@@ -57,19 +57,30 @@
 #define PROBE_TDO_PIN           (-1)  /* TDO not available */
 #define PROBE_TRST_PIN          (-1)  /* nTRST not available */
 
-#define PROBE_UART_TX           8
-#define PROBE_UART_RX           9
+#define PROBE_UART_TX           4     /* Target UART TX (J2) */
+#define PROBE_UART_RX           5     /* Target UART RX (J2) */
 #define PROBE_UART_INTERFACE    uart1
 
-/* LED pins for Debug Probe hardware */
-#define PROBE_DAP_LED           15
-#define PROBE_UART_TX_LED       16
-#define PROBE_UART_RX_LED       17
-#define PROBE_DAP_CONNECTED_LED 18
-#define PROBE_DAP_RUNNING_LED   19
+/*
+ * LED pins for Debug Probe hardware
+ * Matching original debugprobe firmware and hardware schematic:
+ *   D1 (Red, GPIO2):     USB connected indicator
+ *   D2 (Green, GPIO7):   UART RX activity
+ *   D3 (Yellow, GPIO8):  UART TX activity
+ *   D4 (Green, GPIO15):  DAP connected
+ *   D5 (Yellow, GPIO16): DAP running/activity
+ */
+#define PROBE_USB_CONNECTED_LED 2     /* D1 Red - USB connected */
+#define PROBE_UART_RX_LED       7     /* D2 Green - UART RX activity */
+#define PROBE_UART_TX_LED       8     /* D3 Yellow - UART TX activity */
+#define PROBE_DAP_CONNECTED_LED 15    /* D4 Green - DAP connected */
+#define PROBE_DAP_RUNNING_LED   16    /* D5 Yellow - DAP running */
+
+/* Legacy alias for backward compatibility */
+#define PROBE_DAP_LED           PROBE_DAP_RUNNING_LED
 
 /* Output enable for level shifters */
-#define PROBE_IO_OEN            20
+#define PROBE_IO_OEN            10
 #endif
 
 /* JTAG availability check */

@@ -28,6 +28,7 @@
 #endif
 
 #include "probe_config.h"
+#include "led.h"
 #ifdef CONFIG_DEBUGPROBE_DAP
 #include "probe.h"
 #include "dap.h"
@@ -89,20 +90,6 @@ static volatile bool usb_configured = false;
 
 /* GPIO device - defined in probe.c, declared extern in DAP_config.h */
 
-/*
- * LED Control
- */
-#ifdef CONFIG_DEBUGPROBE_DAP_LED
-static void dap_led_set(bool on)
-{
-    if (gpio_dev && PROBE_DAP_LED >= 0) {
-        gpio_pin_set(gpio_dev, PROBE_DAP_LED, on ? 1 : 0);
-    }
-}
-#else
-#define dap_led_set(x) do {} while(0)
-#endif
-
 #ifdef CONFIG_USB_DEVICE_STACK_NEXT
 /*
  * USB Thread - Handles USB device tasks
@@ -144,7 +131,7 @@ static void dap_thread_entry(void *p1, void *p2, void *p3)
         if (k_sem_take(&dap_request_sem, K_FOREVER) == 0) {
             uint32_t response_len;
 
-            dap_led_set(true);
+            led_dap_running(true);
 
             /* Process DAP command */
             response_len = dap_process_request(rx_data_buffer,
@@ -155,7 +142,7 @@ static void dap_thread_entry(void *p1, void *p2, void *p3)
             /* Signal response ready */
             k_sem_give(&dap_response_sem);
 
-            dap_led_set(false);
+            led_dap_running(false);
         }
     }
 }
@@ -205,33 +192,7 @@ static int gpio_init_pins(void)
         return ret;
     }
 
-    /* Configure LED pins if gpio_dev is available */
-#ifdef CONFIG_DEBUGPROBE_DAP_LED
-    if (gpio_dev && PROBE_DAP_LED >= 0) {
-        ret = gpio_pin_configure(gpio_dev, PROBE_DAP_LED, GPIO_OUTPUT_INACTIVE);
-        if (ret < 0) {
-            LOG_WRN("Failed to configure DAP LED pin");
-        }
-    }
-#endif
-
-#ifdef CONFIG_DEBUGPROBE_TX_LED
-    if (gpio_dev && PROBE_UART_TX_LED >= 0) {
-        ret = gpio_pin_configure(gpio_dev, PROBE_UART_TX_LED, GPIO_OUTPUT_INACTIVE);
-        if (ret < 0) {
-            LOG_WRN("Failed to configure TX LED pin");
-        }
-    }
-#endif
-
-#ifdef CONFIG_DEBUGPROBE_RX_LED
-    if (gpio_dev && PROBE_UART_RX_LED >= 0) {
-        ret = gpio_pin_configure(gpio_dev, PROBE_UART_RX_LED, GPIO_OUTPUT_INACTIVE);
-        if (ret < 0) {
-            LOG_WRN("Failed to configure RX LED pin");
-        }
-    }
-#endif
+    /* LED initialization is now handled by led_init() */
 
     return 0;
 }
@@ -296,6 +257,7 @@ static void usb_msg_cb(struct usbd_context *const ctx,
     case USBD_MSG_CONFIGURATION:
         LOG_INF("USB configured");
         usb_configured = true;
+        led_usb_connected(true);
         if (!was_configured) {
             resume_threads();
         }
@@ -305,11 +267,13 @@ static void usb_msg_cb(struct usbd_context *const ctx,
     case USBD_MSG_RESET:
         LOG_INF("USB reset");
         usb_configured = false;
+        led_usb_connected(false);
         /* Keep threads running during reset - they'll be needed once reconfigured */
         break;
 
     case USBD_MSG_SUSPEND:
         LOG_INF("USB suspended");
+        led_usb_connected(false);
         if (was_configured) {
             suspend_threads();
         }
@@ -317,6 +281,7 @@ static void usb_msg_cb(struct usbd_context *const ctx,
 
     case USBD_MSG_RESUME:
         LOG_INF("USB resumed");
+        led_usb_connected(true);
         if (was_configured) {
             resume_threads();
         }
@@ -345,6 +310,13 @@ static void usb_msg_cb(struct usbd_context *const ctx,
 int main(void)
 {
     char serial[17];
+    int ret;
+
+    /* Initialize LEDs first for visual feedback */
+    ret = led_init();
+    if (ret < 0) {
+        LOG_WRN("LED init failed: %d", ret);
+    }
 
     LOG_INF("Debug Probe (Zephyr) starting...");
     LOG_INF("Version: %s", DEBUGPROBE_VERSION);
@@ -354,7 +326,6 @@ int main(void)
     LOG_INF("Serial: %s", serial);
 
 #ifdef CONFIG_USB_DEVICE_STACK_NEXT
-    int ret;
 
 #ifdef CONFIG_DEBUGPROBE_DAP
     /* Initialize GPIO pins */
@@ -384,8 +355,39 @@ int main(void)
     }
     LOG_INF("USB enabled");
 
-    /* Wait for USB to be ready */
-    k_sleep(K_MSEC(100));
+    /* Wait for USB to be configured before printing welcome message */
+    {
+        const struct device *cdc_dev = DEVICE_DT_GET_ONE(zephyr_cdc_acm_uart);
+        int timeout = 30; /* 3 seconds max */
+
+        while (!usb_configured && timeout > 0) {
+            k_sleep(K_MSEC(100));
+            timeout--;
+        }
+
+        /* Wait a bit more for terminal to be ready, then print welcome */
+        if (usb_configured) {
+            uint32_t dtr = 0;
+            timeout = 20; /* 2 more seconds for DTR */
+
+            while (timeout > 0) {
+                if (device_is_ready(cdc_dev)) {
+                    uart_line_ctrl_get(cdc_dev, UART_LINE_CTRL_DTR, &dtr);
+                    if (dtr) {
+                        break;
+                    }
+                }
+                k_sleep(K_MSEC(100));
+                timeout--;
+            }
+
+            /* Print welcome message - matches original debugprobe */
+            printk("\n");
+            printk("Welcome to debugprobe!\n");
+            printk("Version: %s (Zephyr)\n", DEBUGPROBE_VERSION);
+            printk("Serial: %s\n", serial);
+        }
+    }
 
     /*
      * Create threads

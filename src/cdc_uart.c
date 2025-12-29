@@ -25,6 +25,7 @@
 
 #include "probe_config.h"
 #include "cdc_uart.h"
+#include "led.h"
 #include "autobaud.h"
 
 /* USB CDC line control for break (from usb_cdc.h) */
@@ -40,16 +41,9 @@ static const struct device *uart_dev;
 /* CDC ACM device */
 static const struct device *cdc_dev;
 
-/* GPIO device for LEDs */
-static const struct device *gpio_dev;
-
 /* Ring buffers for async operation */
 RING_BUF_DECLARE(cdc_to_uart_rb, USB_TX_BUF_SIZE);
 RING_BUF_DECLARE(uart_to_cdc_rb, USB_RX_BUF_SIZE);
-
-/* LED debounce state */
-static volatile uint32_t tx_led_debounce;
-static volatile uint32_t rx_led_debounce;
 
 /* Break timing */
 static volatile int64_t break_expiry;
@@ -57,9 +51,6 @@ static volatile bool timed_break;
 
 /* Current baud rate */
 static uint32_t current_baudrate = PROBE_UART_BAUDRATE;
-
-/* Debounce timing - convert ms to ticks safely for any tick rate */
-#define DEBOUNCE_TICKS  (((uint64_t)LED_DEBOUNCE_MS * CONFIG_SYS_CLOCK_TICKS_PER_SEC) / 1000)
 
 /*
  * Software Flow Control
@@ -71,31 +62,6 @@ static uint32_t current_baudrate = PROBE_UART_BAUDRATE;
 /* Flow control state */
 static volatile bool rx_flow_paused = false;
 static volatile bool tx_flow_paused = false;
-
-/*
- * LED Control Functions
- */
-#ifdef CONFIG_DEBUGPROBE_TX_LED
-static void tx_led_set(bool on)
-{
-    if (gpio_dev && PROBE_UART_TX_LED >= 0) {
-        gpio_pin_set(gpio_dev, PROBE_UART_TX_LED, on ? 1 : 0);
-    }
-}
-#else
-#define tx_led_set(x) do {} while(0)
-#endif
-
-#ifdef CONFIG_DEBUGPROBE_RX_LED
-static void rx_led_set(bool on)
-{
-    if (gpio_dev && PROBE_UART_RX_LED >= 0) {
-        gpio_pin_set(gpio_dev, PROBE_UART_RX_LED, on ? 1 : 0);
-    }
-}
-#else
-#define rx_led_set(x) do {} while(0)
-#endif
 
 /*
  * Check and update flow control state
@@ -138,11 +104,16 @@ static void uart_irq_callback(const struct device *dev, void *user_data)
         if (uart_irq_rx_ready(dev)) {
             uint8_t c;
             uint32_t free_space = ring_buf_space_get(&uart_to_cdc_rb);
+            bool got_data = false;
 
             while (free_space > 0 && uart_fifo_read(dev, &c, 1) == 1) {
                 ring_buf_put(&uart_to_cdc_rb, &c, 1);
-                rx_led_debounce = DEBOUNCE_TICKS;
+                got_data = true;
                 free_space--;
+            }
+
+            if (got_data) {
+                led_uart_rx_activity();
             }
 
             /* Apply flow control if buffer is getting full */
@@ -157,7 +128,7 @@ static void uart_irq_callback(const struct device *dev, void *user_data)
             uint8_t c;
             if (ring_buf_get(&cdc_to_uart_rb, &c, 1) == 1) {
                 uart_fifo_fill(dev, &c, 1);
-                tx_led_debounce = DEBOUNCE_TICKS;
+                led_uart_tx_activity();
             } else {
                 uart_irq_tx_disable(dev);
             }
@@ -294,13 +265,6 @@ void cdc_uart_init(void)
 
     LOG_INF("Initializing CDC UART bridge");
 
-    /* Get GPIO device for LEDs */
-    gpio_dev = DEVICE_DT_GET(DT_NODELABEL(gpio0));
-    if (!device_is_ready(gpio_dev)) {
-        LOG_WRN("GPIO device not ready");
-        gpio_dev = NULL;
-    }
-
     /* Get UART device */
     uart_dev = DEVICE_DT_GET(DT_NODELABEL(uart1));
     if (!device_is_ready(uart_dev)) {
@@ -333,18 +297,7 @@ void cdc_uart_init(void)
     }
 
     /* Note: Baud rate changes are now handled via polling in cdc_uart_task() */
-
-#ifdef CONFIG_DEBUGPROBE_TX_LED
-    if (gpio_dev && PROBE_UART_TX_LED >= 0) {
-        gpio_pin_configure(gpio_dev, PROBE_UART_TX_LED, GPIO_OUTPUT_INACTIVE);
-    }
-#endif
-
-#ifdef CONFIG_DEBUGPROBE_RX_LED  
-    if (gpio_dev && PROBE_UART_RX_LED >= 0) {
-        gpio_pin_configure(gpio_dev, PROBE_UART_RX_LED, GPIO_OUTPUT_INACTIVE);
-    }
-#endif
+    /* LED initialization is handled by led_init() in main.c */
 
     LOG_INF("CDC UART bridge initialized at %u baud", PROBE_UART_BAUDRATE);
 }
@@ -438,24 +391,8 @@ void cdc_uart_task(void)
     /* Handle break condition */
     cdc_acm_handle_break();
 
-    /* LED debounce handling */
-#ifdef CONFIG_DEBUGPROBE_TX_LED
-    if (tx_led_debounce > 0) {
-        tx_led_set(true);
-        tx_led_debounce--;
-    } else {
-        tx_led_set(false);
-    }
-#endif
-
-#ifdef CONFIG_DEBUGPROBE_RX_LED
-    if (rx_led_debounce > 0) {
-        rx_led_set(true);
-        rx_led_debounce--;
-    } else {
-        rx_led_set(false);
-    }
-#endif
+    /* Update LED debounce timers */
+    led_task();
 }
 
 /*
