@@ -61,11 +61,17 @@
     };
 };
 
-/* USB Device with CDC ACM for console and UART bridge */
+/* USB Device with two CDC ACM interfaces */
 &usbd {
     status = "okay";
 
+    /* CDC ACM #0 - Console/Debug output */
     cdc_acm_uart0: cdc_acm_uart0 {
+        compatible = "zephyr,cdc-acm-uart";
+    };
+
+    /* CDC ACM #1 - UART bridge to target (J2 connector) */
+    cdc_acm_uart1: cdc_acm_uart1 {
         compatible = "zephyr,cdc-acm-uart";
     };
 };

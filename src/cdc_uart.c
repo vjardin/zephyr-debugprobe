@@ -289,10 +289,10 @@ void cdc_uart_init(void)
     uart_irq_callback_set(uart_dev, uart_irq_callback);
     uart_irq_rx_enable(uart_dev);
 
-    /* Get CDC ACM device */
-    cdc_dev = DEVICE_DT_GET_ONE(zephyr_cdc_acm_uart);
+    /* Get CDC ACM device #1 for UART bridge (device #0 is console) */
+    cdc_dev = DEVICE_DT_GET(DT_NODELABEL(cdc_acm_uart1));
     if (!device_is_ready(cdc_dev)) {
-        LOG_ERR("CDC ACM device not ready");
+        LOG_ERR("CDC ACM UART bridge device not ready");
         return;
     }
 
@@ -351,16 +351,21 @@ void cdc_uart_task(void)
     /* Update flow control state */
     update_flow_control();
 
-    /* Read from CDC and send to UART (only if not paused) */
-    if (!tx_flow_paused) {
-        len = ring_buf_get(&cdc_to_uart_rb, buf, sizeof(buf));
+    /* Read from CDC ACM device and put into ring buffer for UART TX */
+    if (!tx_flow_paused && cdc_dev) {
+        len = uart_fifo_read(cdc_dev, buf, sizeof(buf));
         if (len > 0) {
-            /* Enable TX interrupt to send data */
-            uart_irq_tx_enable(uart_dev);
+            ring_buf_put(&cdc_to_uart_rb, buf, len);
+            led_uart_tx_activity();
         }
     }
 
-    /* Read from ring buffer (filled by UART IRQ) and send to CDC */
+    /* Trigger UART TX if there's data in the ring buffer */
+    if (!ring_buf_is_empty(&cdc_to_uart_rb)) {
+        uart_irq_tx_enable(uart_dev);
+    }
+
+    /* Read from UART RX ring buffer and send to CDC ACM device */
     len = ring_buf_get(&uart_to_cdc_rb, buf, sizeof(buf));
     if (len > 0 && cdc_dev) {
         int sent = 0;

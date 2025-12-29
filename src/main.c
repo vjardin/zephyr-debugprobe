@@ -428,6 +428,12 @@ int main(void)
 #endif
 
     LOG_INF("All threads created");
+
+    /* Resume threads if USB was already configured during init */
+    if (usb_configured) {
+        LOG_INF("USB already configured, resuming threads");
+        resume_threads();
+    }
 #else
     LOG_INF("Running in simulation mode (no USB)");
 #endif /* CONFIG_USB_DEVICE_STACK_NEXT */
