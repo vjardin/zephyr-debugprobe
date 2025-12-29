@@ -21,6 +21,7 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/ring_buffer.h>
 #include <zephyr/sys/byteorder.h>
+#include <zephyr/shell/shell.h>
 #include <string.h>
 
 #include "probe_config.h"
@@ -63,6 +64,12 @@ static uint32_t current_baudrate = PROBE_UART_BAUDRATE;
 static volatile bool rx_flow_paused = false;
 static volatile bool tx_flow_paused = false;
 
+/* Statistics counters */
+static volatile uint32_t stats_tx_bytes = 0;  /* Host -> Target (CDC RX -> UART TX) */
+static volatile uint32_t stats_rx_bytes = 0;  /* Target -> Host (UART RX -> CDC TX) */
+static volatile uint32_t stats_tx_overrun = 0; /* Bytes dropped due to full buffer */
+static volatile uint32_t stats_rx_overrun = 0;
+
 /*
  * Check and update flow control state
  */
@@ -104,15 +111,20 @@ static void uart_irq_callback(const struct device *dev, void *user_data)
         if (uart_irq_rx_ready(dev)) {
             uint8_t c;
             uint32_t free_space = ring_buf_space_get(&uart_to_cdc_rb);
-            bool got_data = false;
+            uint32_t count = 0;
 
-            while (free_space > 0 && uart_fifo_read(dev, &c, 1) == 1) {
-                ring_buf_put(&uart_to_cdc_rb, &c, 1);
-                got_data = true;
-                free_space--;
+            while (uart_fifo_read(dev, &c, 1) == 1) {
+                if (free_space > 0) {
+                    ring_buf_put(&uart_to_cdc_rb, &c, 1);
+                    free_space--;
+                    count++;
+                } else {
+                    stats_rx_overrun++;
+                }
             }
 
-            if (got_data) {
+            if (count > 0) {
+                stats_rx_bytes += count;
                 led_uart_rx_activity();
             }
 
@@ -153,10 +165,14 @@ static void cdc_irq_callback(const struct device *dev, void *user_data)
             len = uart_fifo_read(dev, buf, sizeof(buf));
             if (len > 0) {
                 uint32_t free_space = ring_buf_space_get(&cdc_to_uart_rb);
-                if (free_space >= len) {
-                    ring_buf_put(&cdc_to_uart_rb, buf, len);
-                } else if (free_space > 0) {
-                    ring_buf_put(&cdc_to_uart_rb, buf, free_space);
+                uint32_t to_write = (free_space >= len) ? len : free_space;
+
+                if (to_write > 0) {
+                    ring_buf_put(&cdc_to_uart_rb, buf, to_write);
+                    stats_tx_bytes += to_write;
+                }
+                if (to_write < len) {
+                    stats_tx_overrun += (len - to_write);
                     tx_flow_paused = true;
                 }
                 led_uart_tx_activity();
@@ -476,3 +492,55 @@ bool cdc_uart_data_available(void)
 {
     return !ring_buf_is_empty(&uart_to_cdc_rb);
 }
+
+/*
+ * Shell Commands for UART bridge diagnostics
+ */
+
+/* uart stats - show byte counters and buffer status */
+static int cmd_uart_stats(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+
+    shell_print(sh, "UART Bridge Statistics:");
+    shell_print(sh, "  TX (Host->Target): %u bytes, %u overrun",
+                stats_tx_bytes, stats_tx_overrun);
+    shell_print(sh, "  RX (Target->Host): %u bytes, %u overrun",
+                stats_rx_bytes, stats_rx_overrun);
+    shell_print(sh, "Buffer Status:");
+    shell_print(sh, "  cdc_to_uart: %u/%u bytes",
+                ring_buf_size_get(&cdc_to_uart_rb), USB_TX_BUF_SIZE);
+    shell_print(sh, "  uart_to_cdc: %u/%u bytes",
+                ring_buf_size_get(&uart_to_cdc_rb), USB_RX_BUF_SIZE);
+    shell_print(sh, "Flow Control:");
+    shell_print(sh, "  TX paused: %s, RX paused: %s",
+                tx_flow_paused ? "yes" : "no",
+                rx_flow_paused ? "yes" : "no");
+    shell_print(sh, "Baud Rate: %u", current_baudrate);
+
+    return 0;
+}
+
+/* uart reset - reset statistics counters */
+static int cmd_uart_reset(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+
+    stats_tx_bytes = 0;
+    stats_rx_bytes = 0;
+    stats_tx_overrun = 0;
+    stats_rx_overrun = 0;
+
+    shell_print(sh, "Statistics reset");
+    return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_uart,
+    SHELL_CMD(stats, NULL, "Show UART bridge statistics", cmd_uart_stats),
+    SHELL_CMD(reset, NULL, "Reset statistics counters", cmd_uart_reset),
+    SHELL_SUBCMD_SET_END
+);
+
+SHELL_CMD_REGISTER(uart, &sub_uart, "UART bridge commands", NULL);
