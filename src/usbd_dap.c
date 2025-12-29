@@ -18,6 +18,9 @@
 
 LOG_MODULE_REGISTER(usbd_dap, CONFIG_LOG_DEFAULT_LEVEL);
 
+/* CMSIS-DAP interface string descriptor */
+USBD_DESC_STRING_DEFINE(dap_iface_str, "CMSIS-DAP v2", USBD_DUT_STRING_INTERFACE);
+
 /* DAP processing function from dap.c */
 extern uint32_t dap_process_request(const uint8_t *request, uint32_t request_len,
                                     uint8_t *response, uint32_t response_len);
@@ -413,6 +416,20 @@ static void dap_resumed(struct usbd_class_data *const c_data)
  */
 static int dap_class_init(struct usbd_class_data *c_data)
 {
+    struct usbd_context *uds_ctx = usbd_class_get_ctx(c_data);
+    int ret;
+
+    /* Register CMSIS-DAP interface string descriptor */
+    ret = usbd_add_descriptor(uds_ctx, &dap_iface_str);
+    if (ret == 0) {
+        /* Update interface descriptor with assigned string index */
+        dap_desc.if0.iInterface = usbd_str_desc_get_idx(&dap_iface_str);
+        LOG_INF("CMSIS-DAP interface string registered (idx=%d)",
+                dap_desc.if0.iInterface);
+    } else {
+        LOG_WRN("Failed to add CMSIS-DAP interface string: %d", ret);
+    }
+
     LOG_INF("CMSIS-DAP class initialized");
     return 0;
 }
