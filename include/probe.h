@@ -175,3 +175,39 @@ int probe_jtag_write_ir(uint8_t index, uint32_t ir, uint8_t ir_len);
  * @return 0 on success, negative error code otherwise
  */
 int probe_jtag_transfer_dr(uint8_t index, const uint32_t *dr_out, uint32_t *dr_in, uint8_t dr_len);
+
+/*
+ * Diagnostic Functions
+ */
+
+/**
+ * @brief Get SWD pin states
+ *
+ * @param swclk Pointer to store SWCLK state (0/1), or NULL
+ * @param swdio Pointer to store SWDIO state (0/1), or NULL
+ * @param reset Pointer to store nRESET state (0/1/-1 if N/A), or NULL
+ */
+void probe_get_pin_state(int *swclk, int *swdio, int *reset);
+
+/**
+ * @brief Get SWD pin numbers
+ *
+ * @param swclk_pin Pointer to store SWCLK GPIO number, or NULL
+ * @param swdio_pin Pointer to store SWDIO GPIO number, or NULL
+ * @param reset_pin Pointer to store nRESET GPIO number (-1 if N/A), or NULL
+ */
+void probe_get_pin_info(int *swclk_pin, int *swdio_pin, int *reset_pin);
+
+/**
+ * @brief Check if PIO acceleration is enabled
+ *
+ * @return true if PIO is in use, false for GPIO bit-bang
+ */
+bool probe_is_pio_enabled(void);
+
+/**
+ * @brief Get system clock frequency
+ *
+ * @return System clock in Hz
+ */
+uint32_t probe_get_sys_clock(void);

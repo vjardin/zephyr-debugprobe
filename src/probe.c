@@ -1189,3 +1189,83 @@ int probe_jtag_transfer_dr(uint8_t index, const uint32_t *dr_out, uint32_t *dr_i
     LOG_DBG("JTAG DR transfer for device %d: %d bits", index, dr_len);
     return 0;
 }
+
+/*
+ * Diagnostic functions for shell commands
+ */
+
+#if USE_DT_GPIO
+/*
+ * Get SWD pin states
+ */
+void probe_get_pin_state(int *swclk, int *swdio, int *reset)
+{
+    if (swclk) {
+        *swclk = gpio_pin_get_dt(&swclk_gpio);
+    }
+    if (swdio) {
+        *swdio = gpio_pin_get_dt(&swdio_gpio);
+    }
+    if (reset) {
+#if HAS_RESET_GPIO
+        *reset = gpio_pin_get_dt(&reset_gpio);
+#else
+        *reset = -1;
+#endif
+    }
+}
+
+/*
+ * Get SWD pin numbers for display
+ */
+void probe_get_pin_info(int *swclk_pin, int *swdio_pin, int *reset_pin)
+{
+    if (swclk_pin) {
+        *swclk_pin = swclk_gpio.pin;
+    }
+    if (swdio_pin) {
+        *swdio_pin = swdio_gpio.pin;
+    }
+    if (reset_pin) {
+#if HAS_RESET_GPIO
+        *reset_pin = reset_gpio.pin;
+#else
+        *reset_pin = -1;
+#endif
+    }
+}
+#else
+void probe_get_pin_state(int *swclk, int *swdio, int *reset)
+{
+    if (swclk) *swclk = -1;
+    if (swdio) *swdio = -1;
+    if (reset) *reset = -1;
+}
+
+void probe_get_pin_info(int *swclk_pin, int *swdio_pin, int *reset_pin)
+{
+    if (swclk_pin) *swclk_pin = PROBE_PIN_SWCLK;
+    if (swdio_pin) *swdio_pin = PROBE_PIN_SWDIO;
+    if (reset_pin) *reset_pin = PROBE_PIN_RESET;
+}
+#endif
+
+/*
+ * Check if PIO acceleration is in use
+ */
+bool probe_is_pio_enabled(void)
+{
+#ifdef CONFIG_SOC_RP2040
+    return use_pio_swd;
+#else
+    return false;
+#endif
+}
+
+/*
+ * Get system clock frequency
+ */
+uint32_t probe_get_sys_clock(void)
+{
+    return sys_clock_hw_cycles_per_sec();
+}

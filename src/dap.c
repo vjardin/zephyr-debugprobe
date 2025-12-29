@@ -56,6 +56,10 @@ static volatile uint32_t stats_transfer_ok = 0;
 static volatile uint32_t stats_transfer_wait = 0;
 static volatile uint32_t stats_transfer_fault = 0;
 static volatile uint32_t stats_transfer_error = 0;
+static volatile uint32_t stats_retries = 0;
+
+/* Protocol tracing */
+static bool dap_trace_enabled = false;
 
 /*
  * Get DAP Info String
@@ -1599,12 +1603,14 @@ static int cmd_dap_stats(const struct shell *sh, size_t argc, char **argv)
     shell_print(sh, "  Clock: %u Hz", probe_get_swj_clock());
     shell_print(sh, "  Connected: %s", led_connect_state ? "yes" : "no");
     shell_print(sh, "  Running: %s", led_running_state ? "yes" : "no");
+    shell_print(sh, "  Trace: %s", dap_trace_enabled ? "on" : "off");
     shell_print(sh, "Transfer Statistics:");
     shell_print(sh, "  Total: %u", stats_transfers);
     shell_print(sh, "  OK: %u", stats_transfer_ok);
-    shell_print(sh, "  WAIT: %u", stats_transfer_wait);
+    shell_print(sh, "  WAIT: %u (exhausted retries)", stats_transfer_wait);
     shell_print(sh, "  FAULT: %u", stats_transfer_fault);
     shell_print(sh, "  ERROR: %u", stats_transfer_error);
+    shell_print(sh, "  Retries: %u", stats_retries);
 
     return 0;
 }
@@ -1620,14 +1626,82 @@ static int cmd_dap_reset(const struct shell *sh, size_t argc, char **argv)
     stats_transfer_wait = 0;
     stats_transfer_fault = 0;
     stats_transfer_error = 0;
+    stats_retries = 0;
 
     shell_print(sh, "Statistics reset");
+    return 0;
+}
+
+/* dap clock - show clock configuration */
+static int cmd_dap_clock(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+
+    shell_print(sh, "Clock Configuration:");
+    shell_print(sh, "  System: %u Hz", probe_get_sys_clock());
+    shell_print(sh, "  SWCLK: %u Hz", probe_get_swj_clock());
+    shell_print(sh, "  PIO: %s", probe_is_pio_enabled() ? "enabled" : "disabled (GPIO bit-bang)");
+
+    return 0;
+}
+
+/* dap pins - show SWD pin states */
+static int cmd_dap_pins(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+
+    int swclk, swdio, reset;
+    int swclk_pin, swdio_pin, reset_pin;
+
+    probe_get_pin_state(&swclk, &swdio, &reset);
+    probe_get_pin_info(&swclk_pin, &swdio_pin, &reset_pin);
+
+    shell_print(sh, "SWD Pin States:");
+    shell_print(sh, "  SWCLK (GPIO%d): %s", swclk_pin,
+                swclk < 0 ? "N/A" : (swclk ? "high" : "low"));
+    shell_print(sh, "  SWDIO (GPIO%d): %s", swdio_pin,
+                swdio < 0 ? "N/A" : (swdio ? "high" : "low"));
+    if (reset_pin >= 0) {
+        shell_print(sh, "  nRESET (GPIO%d): %s", reset_pin,
+                    reset < 0 ? "N/A" : (reset ? "released" : "asserted"));
+    } else {
+        shell_print(sh, "  nRESET: not available");
+    }
+
+    return 0;
+}
+
+/* dap trace - enable/disable protocol tracing */
+static int cmd_dap_trace(const struct shell *sh, size_t argc, char **argv)
+{
+    if (argc < 2) {
+        shell_print(sh, "Trace: %s", dap_trace_enabled ? "on" : "off");
+        shell_print(sh, "Usage: dap trace <on|off>");
+        return 0;
+    }
+
+    if (strcmp(argv[1], "on") == 0) {
+        dap_trace_enabled = true;
+        shell_print(sh, "DAP trace enabled");
+    } else if (strcmp(argv[1], "off") == 0) {
+        dap_trace_enabled = false;
+        shell_print(sh, "DAP trace disabled");
+    } else {
+        shell_print(sh, "Usage: dap trace <on|off>");
+        return -EINVAL;
+    }
+
     return 0;
 }
 
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_dap,
     SHELL_CMD(stats, NULL, "Show DAP status and statistics", cmd_dap_stats),
     SHELL_CMD(reset, NULL, "Reset statistics counters", cmd_dap_reset),
+    SHELL_CMD(clock, NULL, "Show clock configuration", cmd_dap_clock),
+    SHELL_CMD(pins, NULL, "Show SWD pin states", cmd_dap_pins),
+    SHELL_CMD(trace, NULL, "Enable/disable protocol tracing", cmd_dap_trace),
     SHELL_SUBCMD_SET_END
 );
 
