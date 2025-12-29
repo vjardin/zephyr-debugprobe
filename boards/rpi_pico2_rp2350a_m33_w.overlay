@@ -80,7 +80,13 @@
 &usbd {
     status = "okay";
 
+    /* CDC ACM #0 - available for host communication */
     cdc_acm_uart0: cdc_acm_uart0 {
+        compatible = "zephyr,cdc-acm-uart";
+    };
+
+    /* CDC ACM #1 - UART bridge to target */
+    cdc_acm_uart1: cdc_acm_uart1 {
         compatible = "zephyr,cdc-acm-uart";
     };
 };
