@@ -39,7 +39,13 @@
 
 /* Add CDC ACM UART to the virtual USB device controller */
 &zephyr_udc0 {
+	/* CDC ACM #0 - Console */
 	cdc_acm_uart0: cdc_acm_uart0 {
+		compatible = "zephyr,cdc-acm-uart";
+	};
+
+	/* CDC ACM #1 - UART bridge to target */
+	cdc_acm_uart1: cdc_acm_uart1 {
 		compatible = "zephyr,cdc-acm-uart";
 	};
 };
