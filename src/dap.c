@@ -10,6 +10,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/shell/shell.h>
 #include <string.h>
 
 #include "probe_config.h"
@@ -48,6 +49,13 @@ static uint32_t transfer_timestamp = 0;
 /* LED state tracking */
 static bool led_connect_state = false;
 static bool led_running_state = false;
+
+/* Statistics counters */
+static volatile uint32_t stats_transfers = 0;
+static volatile uint32_t stats_transfer_ok = 0;
+static volatile uint32_t stats_transfer_wait = 0;
+static volatile uint32_t stats_transfer_fault = 0;
+static volatile uint32_t stats_transfer_error = 0;
 
 /*
  * Get DAP Info String
@@ -472,6 +480,18 @@ static uint32_t dap_cmd_transfer(const uint8_t *request, uint8_t *response)
     }
 
 end:
+    /* Update statistics */
+    stats_transfers += response_count;
+    if (ack == DAP_TRANSFER_OK) {
+        stats_transfer_ok += response_count;
+    } else if (ack == DAP_TRANSFER_WAIT) {
+        stats_transfer_wait++;
+    } else if (ack == DAP_TRANSFER_FAULT) {
+        stats_transfer_fault++;
+    } else {
+        stats_transfer_error++;
+    }
+
     response[1] = (uint8_t)response_count;
     response[2] = ack;
 
@@ -760,6 +780,18 @@ static uint32_t dap_cmd_transfer_block(const uint8_t *request, uint8_t *response
     }
 
 end:
+    /* Update statistics */
+    stats_transfers += response_count;
+    if (ack == DAP_TRANSFER_OK) {
+        stats_transfer_ok += response_count;
+    } else if (ack == DAP_TRANSFER_WAIT) {
+        stats_transfer_wait++;
+    } else if (ack == DAP_TRANSFER_FAULT) {
+        stats_transfer_fault++;
+    } else {
+        stats_transfer_error++;
+    }
+
     response[1] = (uint8_t)response_count;
     response[2] = (uint8_t)(response_count >> 8);
     response[3] = ack;
@@ -1539,3 +1571,64 @@ uint8_t dap_get_idle_cycles(void)
 {
     return idle_cycles;
 }
+
+/*
+ * Shell Commands for DAP diagnostics
+ */
+
+static const char *dap_port_str(uint8_t port)
+{
+    switch (port) {
+    case DAP_PORT_SWD:
+        return "SWD";
+    case DAP_PORT_JTAG:
+        return "JTAG";
+    default:
+        return "Disabled";
+    }
+}
+
+/* dap stats - show DAP status and transfer statistics */
+static int cmd_dap_stats(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+
+    shell_print(sh, "DAP Status:");
+    shell_print(sh, "  Port: %s", dap_port_str(dap_port));
+    shell_print(sh, "  Clock: %u Hz", probe_get_swj_clock());
+    shell_print(sh, "  Connected: %s", led_connect_state ? "yes" : "no");
+    shell_print(sh, "  Running: %s", led_running_state ? "yes" : "no");
+    shell_print(sh, "Transfer Statistics:");
+    shell_print(sh, "  Total: %u", stats_transfers);
+    shell_print(sh, "  OK: %u", stats_transfer_ok);
+    shell_print(sh, "  WAIT: %u", stats_transfer_wait);
+    shell_print(sh, "  FAULT: %u", stats_transfer_fault);
+    shell_print(sh, "  ERROR: %u", stats_transfer_error);
+
+    return 0;
+}
+
+/* dap reset - reset statistics counters */
+static int cmd_dap_reset(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+
+    stats_transfers = 0;
+    stats_transfer_ok = 0;
+    stats_transfer_wait = 0;
+    stats_transfer_fault = 0;
+    stats_transfer_error = 0;
+
+    shell_print(sh, "Statistics reset");
+    return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_dap,
+    SHELL_CMD(stats, NULL, "Show DAP status and statistics", cmd_dap_stats),
+    SHELL_CMD(reset, NULL, "Reset statistics counters", cmd_dap_reset),
+    SHELL_SUBCMD_SET_END
+);
+
+SHELL_CMD_REGISTER(dap, &sub_dap, "DAP debug commands", NULL);
