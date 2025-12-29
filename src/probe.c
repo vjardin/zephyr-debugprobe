@@ -1244,9 +1244,9 @@ void probe_get_pin_state(int *swclk, int *swdio, int *reset)
 
 void probe_get_pin_info(int *swclk_pin, int *swdio_pin, int *reset_pin)
 {
-    if (swclk_pin) *swclk_pin = PROBE_PIN_SWCLK;
-    if (swdio_pin) *swdio_pin = PROBE_PIN_SWDIO;
-    if (reset_pin) *reset_pin = PROBE_PIN_RESET;
+    if (swclk_pin) *swclk_pin = PROBE_SWCLK_PIN;
+    if (swdio_pin) *swdio_pin = PROBE_SWDIO_PIN;
+    if (reset_pin) *reset_pin = PROBE_RESET_PIN;
 }
 #endif
 
