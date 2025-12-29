@@ -469,7 +469,47 @@ uint8_t pio_swd_transfer(uint32_t request, uint32_t *data)
  */
 #include <zephyr/shell/shell.h>
 
-/* pio status - show PIO state machine status */
+/* Helper to print one PIO block status */
+static void print_pio_block_status(const struct shell *sh, PIO pio, int pio_num)
+{
+    shell_print(sh, "PIO%d:", pio_num);
+    shell_print(sh, "  CTRL: 0x%08x", pio->ctrl);
+
+    /* Show which SMs are enabled */
+    for (int sm = 0; sm < 4; sm++) {
+        bool enabled = (pio->ctrl & (1u << sm)) != 0;
+        if (enabled) {
+            uint32_t flevel = pio->flevel;
+            uint tx_level = (flevel >> (sm * 8)) & 0xF;
+            uint rx_level = (flevel >> (sm * 8 + 4)) & 0xF;
+            uint32_t pc = pio_sm_get_pc(pio, sm);
+
+            shell_print(sh, "  SM%d: enabled, PC=%u, TX=%u/4, RX=%u/4",
+                        sm, pc, tx_level, rx_level);
+        }
+    }
+
+    /* Show FDEBUG flags */
+    uint32_t fdebug = pio->fdebug;
+    if (fdebug) {
+        shell_print(sh, "  FDEBUG: 0x%08x", fdebug);
+    }
+}
+
+/* pio all - show status of both PIO blocks */
+static int cmd_pio_all(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+
+    shell_print(sh, "RP2040 PIO Overview:");
+    print_pio_block_status(sh, pio0, 0);
+    print_pio_block_status(sh, pio1, 1);
+
+    return 0;
+}
+
+/* pio status - show PIO SWD state machine status */
 static int cmd_pio_status(const struct shell *sh, size_t argc, char **argv)
 {
     ARG_UNUSED(argc);
@@ -478,7 +518,7 @@ static int cmd_pio_status(const struct shell *sh, size_t argc, char **argv)
     PIO pio = PIO_SWD_PIO;
     uint sm = PIO_SWD_SM;
 
-    shell_print(sh, "PIO SWD Status:");
+    shell_print(sh, "PIO SWD Status (PIO0 SM0):");
     shell_print(sh, "  Initialized: %s", pio_swd_initialized ? "yes" : "no");
 
     if (!pio_swd_initialized) {
@@ -486,7 +526,6 @@ static int cmd_pio_status(const struct shell *sh, size_t argc, char **argv)
     }
 
     shell_print(sh, "  Program offset: %u", pio_program_offset);
-    shell_print(sh, "  State machine: PIO%d SM%d", 0, sm);
 
     /* Check if SM is enabled */
     bool sm_enabled = (pio->ctrl & (1u << sm)) != 0;
@@ -583,12 +622,13 @@ static int cmd_pio_reset(const struct shell *sh, size_t argc, char **argv)
 }
 
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_pio,
-    SHELL_CMD(status, NULL, "Show PIO state machine status", cmd_pio_status),
-    SHELL_CMD(debug, NULL, "Show PIO debug registers", cmd_pio_debug),
-    SHELL_CMD(reset, NULL, "Clear PIO debug flags", cmd_pio_reset),
+    SHELL_CMD(all, NULL, "Show all PIO blocks overview", cmd_pio_all),
+    SHELL_CMD(status, NULL, "Show PIO SWD state machine status", cmd_pio_status),
+    SHELL_CMD(debug, NULL, "Show PIO SWD debug registers", cmd_pio_debug),
+    SHELL_CMD(reset, NULL, "Clear PIO SWD debug flags", cmd_pio_reset),
     SHELL_SUBCMD_SET_END
 );
 
-SHELL_CMD_REGISTER(pio, &sub_pio, "PIO SWD diagnostics", NULL);
+SHELL_CMD_REGISTER(pio, &sub_pio, "PIO diagnostics (RP2040)", NULL);
 
 #endif /* CONFIG_SOC_RP2040 */
