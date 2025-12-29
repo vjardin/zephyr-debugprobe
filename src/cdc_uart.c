@@ -93,7 +93,7 @@ static void update_flow_control(void)
 }
 
 /*
- * UART Interrupt Callback
+ * UART Interrupt Callback (hardware UART to target)
  */
 static void uart_irq_callback(const struct device *dev, void *user_data)
 {
@@ -129,6 +129,52 @@ static void uart_irq_callback(const struct device *dev, void *user_data)
             if (ring_buf_get(&cdc_to_uart_rb, &c, 1) == 1) {
                 uart_fifo_fill(dev, &c, 1);
                 led_uart_tx_activity();
+            } else {
+                uart_irq_tx_disable(dev);
+            }
+        }
+    }
+}
+
+/*
+ * CDC ACM Interrupt Callback (USB host to probe)
+ * Handles data received from the USB host on the UART bridge interface
+ */
+static void cdc_irq_callback(const struct device *dev, void *user_data)
+{
+    ARG_UNUSED(user_data);
+
+    while (uart_irq_update(dev) && uart_irq_is_pending(dev)) {
+        /* Handle RX - data from USB host to be sent to target UART */
+        if (uart_irq_rx_ready(dev)) {
+            uint8_t buf[64];
+            int len;
+
+            len = uart_fifo_read(dev, buf, sizeof(buf));
+            if (len > 0) {
+                uint32_t free_space = ring_buf_space_get(&cdc_to_uart_rb);
+                if (free_space >= len) {
+                    ring_buf_put(&cdc_to_uart_rb, buf, len);
+                } else if (free_space > 0) {
+                    ring_buf_put(&cdc_to_uart_rb, buf, free_space);
+                    tx_flow_paused = true;
+                }
+                led_uart_tx_activity();
+                /* Trigger UART TX */
+                uart_irq_tx_enable(uart_dev);
+            }
+        }
+
+        /* Handle TX - data from target UART to be sent to USB host */
+        if (uart_irq_tx_ready(dev)) {
+            uint8_t buf[64];
+            uint32_t len = ring_buf_get(&uart_to_cdc_rb, buf, sizeof(buf));
+            if (len > 0) {
+                int sent = uart_fifo_fill(dev, buf, len);
+                if (sent < len) {
+                    /* Put back unsent bytes */
+                    ring_buf_put(&uart_to_cdc_rb, &buf[sent], len - sent);
+                }
             } else {
                 uart_irq_tx_disable(dev);
             }
@@ -296,6 +342,10 @@ void cdc_uart_init(void)
         return;
     }
 
+    /* Set up CDC ACM interrupt callback for receiving data from USB host */
+    uart_irq_callback_set(cdc_dev, cdc_irq_callback);
+    uart_irq_rx_enable(cdc_dev);
+
     /* Note: Baud rate changes are now handled via polling in cdc_uart_task() */
     /* LED initialization is handled by led_init() in main.c */
 
@@ -316,9 +366,6 @@ void cdc_uart_init(void)
  */
 void cdc_uart_task(void)
 {
-    uint8_t buf[64];
-    int len;
-
     /* Handle timed break expiry */
     if (timed_break && k_uptime_get() >= break_expiry) {
         timed_break = false;
@@ -351,40 +398,24 @@ void cdc_uart_task(void)
     /* Update flow control state */
     update_flow_control();
 
-    /* Read from CDC ACM device and put into ring buffer for UART TX */
-    if (!tx_flow_paused && cdc_dev) {
-        len = uart_fifo_read(cdc_dev, buf, sizeof(buf));
-        if (len > 0) {
-            ring_buf_put(&cdc_to_uart_rb, buf, len);
-            led_uart_tx_activity();
-        }
-    }
+    /* CDC RX is now handled by cdc_irq_callback() */
 
-    /* Trigger UART TX if there's data in the ring buffer */
+    /* Trigger UART TX if there's data in the cdc_to_uart ring buffer */
     if (!ring_buf_is_empty(&cdc_to_uart_rb)) {
         uart_irq_tx_enable(uart_dev);
     }
 
-    /* Read from UART RX ring buffer and send to CDC ACM device */
-    len = ring_buf_get(&uart_to_cdc_rb, buf, sizeof(buf));
-    if (len > 0 && cdc_dev) {
-        int sent = 0;
-        while (sent < len) {
-            int ret = uart_fifo_fill(cdc_dev, &buf[sent], len - sent);
-            if (ret > 0) {
-                sent += ret;
-            } else {
-                break;
-            }
-        }
+    /* Trigger CDC TX if there's data in the uart_to_cdc ring buffer */
+    if (!ring_buf_is_empty(&uart_to_cdc_rb) && cdc_dev) {
+        uart_irq_tx_enable(cdc_dev);
+    }
 
-        /* Resume RX if we drained the buffer below threshold */
-        if (rx_flow_paused &&
-            ring_buf_size_get(&uart_to_cdc_rb) <= FLOW_CTRL_LOW_WATER) {
-            rx_flow_paused = false;
-            uart_irq_rx_enable(uart_dev);
-            LOG_DBG("RX flow: resumed after CDC drain");
-        }
+    /* Resume UART RX if we drained the buffer below threshold */
+    if (rx_flow_paused &&
+        ring_buf_size_get(&uart_to_cdc_rb) <= FLOW_CTRL_LOW_WATER) {
+        rx_flow_paused = false;
+        uart_irq_rx_enable(uart_dev);
+        LOG_DBG("RX flow: resumed after CDC drain");
     }
 
     /* Poll for baud rate changes */
