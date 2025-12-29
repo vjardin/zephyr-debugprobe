@@ -167,14 +167,16 @@ west build -b rpi_pico/rp2040/w -d build_pico_w debugprobe # buildX
 Workspace structure:
 
 ```
-XXX TODO update it
-zephyr-debugprobe/
-├── debugprobe/          # This project (manifest repo)
-├── zephyr/              # Zephyr RTOS
+debugprobe-workspace/
+├── debugprobe/              # This project (manifest repo)
+├── zephyr/                  # Zephyr RTOS
 ├── modules/
-│   ├── hal/rpi_pico/    # RP2040 HAL
-│   └── lib/cmsis/       # ARM CMSIS
-└── .west/
+│   ├── hal/
+│   │   ├── rpi_pico/        # RP2040/RP2350 HAL (Pico SDK)
+│   │   └── cmsis_6/         # ARM CMSIS 6
+│   └── ...
+├── .venv/                   # Python virtual environment
+└── .west/                   # West configuration
 ```
 
 ### Option 2: Using Existing Zephyr Installation
@@ -275,6 +277,90 @@ Default pin assignments for Raspberry Pi Pico (DEBUG_ON_PICO mode):
 | DAP LED  | GP25 | On-board LED |
 
 For Debug Probe hardware, different pins are used (see `probe_config.h`).
+
+## Shell Debug Commands
+
+The firmware includes an interactive shell accessible via the USB CDC console (typically `/dev/ttyACM0`).
+Connect at 115200 baud and press Enter to see the prompt.
+
+### DAP Commands
+
+| Command | Description |
+|---------|-------------|
+| `dap stats` | Show transfer statistics, clock frequency, connection status |
+| `dap reset` | Reset transfer statistics counters |
+| `dap clock` | Show system clock, SWCLK frequency, PIO status |
+| `dap pins` | Display SWCLK, SWDIO, nRESET GPIO pin states |
+| `dap trace on/off` | Enable/disable protocol tracing |
+
+Example output:
+```
+debugprobe:~$ dap stats
+DAP Status:
+  Clock: 1000000 Hz
+  Connected: no
+  Running: no
+  Trace: off
+Transfer Statistics:
+  Total: 0
+  OK: 0
+  WAIT: 0 (exhausted retries)
+  FAULT: 0
+  ERROR: 0
+  Retries: 0
+```
+
+### PIO Commands (RP2040/RP2350 only)
+
+| Command | Description |
+|---------|-------------|
+| `pio all` | Overview of both PIO blocks (instructions, state machines) |
+| `pio status` | Detailed SWD state machine status (PIO0 SM0) |
+| `pio debug` | Show FDEBUG register, clock divider, effective SWCLK |
+| `pio reset` | Clear PIO debug flags |
+
+Example output:
+```
+debugprobe:~$ pio all
+RP2040 PIO Overview:
+PIO0:
+  Instructions: 11/32 (offset 21-31)
+  SM0: enabled, PC=24, TX=0/4, RX=0/4
+  FDEBUG: 0x01000000
+PIO1:
+  No state machines enabled
+```
+
+### UART Commands
+
+| Command | Description |
+|---------|-------------|
+| `uart stats` | Show TX/RX byte counts, overruns, baud rate |
+| `uart reset` | Reset UART statistics counters |
+
+Example output:
+```
+debugprobe:~$ uart stats
+UART Bridge Statistics:
+  Status: running
+  Baud rate: 115200
+  TX bytes: 1234
+  RX bytes: 5678
+  TX overruns: 0
+  RX overruns: 0
+```
+
+### Built-in Zephyr Commands
+
+The shell also provides standard Zephyr commands:
+
+| Command | Description |
+|---------|-------------|
+| `help` | List all available commands |
+| `kernel threads` | Show running threads and stack usage |
+| `kernel uptime` | Show system uptime |
+| `device list` | List all device drivers |
+| `gpio` | GPIO manipulation commands |
 
 ## Architecture
 
