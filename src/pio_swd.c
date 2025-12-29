@@ -464,4 +464,131 @@ uint8_t pio_swd_transfer(uint32_t request, uint32_t *data)
     return (uint8_t)ack;
 }
 
+/*
+ * Shell commands for PIO debugging
+ */
+#include <zephyr/shell/shell.h>
+
+/* pio status - show PIO state machine status */
+static int cmd_pio_status(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+
+    PIO pio = PIO_SWD_PIO;
+    uint sm = PIO_SWD_SM;
+
+    shell_print(sh, "PIO SWD Status:");
+    shell_print(sh, "  Initialized: %s", pio_swd_initialized ? "yes" : "no");
+
+    if (!pio_swd_initialized) {
+        return 0;
+    }
+
+    shell_print(sh, "  Program offset: %u", pio_program_offset);
+    shell_print(sh, "  State machine: PIO%d SM%d", 0, sm);
+
+    /* Check if SM is enabled */
+    bool sm_enabled = (pio->ctrl & (1u << sm)) != 0;
+    shell_print(sh, "  SM enabled: %s", sm_enabled ? "yes" : "no");
+
+    /* Show FIFO levels */
+    uint32_t flevel = pio->flevel;
+    uint tx_level = (flevel >> (sm * 8)) & 0xF;
+    uint rx_level = (flevel >> (sm * 8 + 4)) & 0xF;
+    shell_print(sh, "  TX FIFO level: %u/4", tx_level);
+    shell_print(sh, "  RX FIFO level: %u/4", rx_level);
+
+    /* Show current instruction address */
+    uint32_t pc = pio_sm_get_pc(pio, sm);
+    shell_print(sh, "  Program counter: %u", pc - pio_program_offset);
+
+#if PIO_SWD_HAS_OE_CONTROL
+    shell_print(sh, "  OE pin (GPIO%d): %s", PROBE_IO_OEN,
+                gpio_get(PROBE_IO_OEN) ? "output" : "input/hi-z");
+#endif
+
+    return 0;
+}
+
+/* pio debug - show PIO debug registers */
+static int cmd_pio_debug(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+
+    PIO pio = PIO_SWD_PIO;
+    uint sm = PIO_SWD_SM;
+
+    shell_print(sh, "PIO Debug Info:");
+
+    if (!pio_swd_initialized) {
+        shell_print(sh, "  PIO SWD not initialized");
+        return 0;
+    }
+
+    /* Read FDEBUG register */
+    uint32_t fdebug = pio->fdebug;
+    uint32_t stall_mask = 1u << (PIO_FDEBUG_TXSTALL_LSB + sm);
+    uint32_t over_mask = 1u << (PIO_FDEBUG_TXOVER_LSB + sm);
+    uint32_t under_mask = 1u << (PIO_FDEBUG_RXUNDER_LSB + sm);
+    uint32_t rxstall_mask = 1u << (PIO_FDEBUG_RXSTALL_LSB + sm);
+
+    shell_print(sh, "  FDEBUG register: 0x%08x", fdebug);
+    shell_print(sh, "  TX stall: %s", (fdebug & stall_mask) ? "yes" : "no");
+    shell_print(sh, "  TX overflow: %s", (fdebug & over_mask) ? "yes" : "no");
+    shell_print(sh, "  RX underflow: %s", (fdebug & under_mask) ? "yes" : "no");
+    shell_print(sh, "  RX stall: %s", (fdebug & rxstall_mask) ? "yes" : "no");
+
+    /* Show clock divider */
+    uint32_t clkdiv = pio->sm[sm].clkdiv;
+    uint32_t int_div = clkdiv >> 16;
+    uint32_t frac_div = (clkdiv >> 8) & 0xFF;
+    shell_print(sh, "  Clock divider: %u.%02u", int_div, (frac_div * 100) / 256);
+
+    /* Calculate effective frequency */
+    uint32_t sys_freq = clock_get_hz(clk_sys);
+    float eff_div = (float)int_div + (float)frac_div / 256.0f;
+    if (eff_div > 0) {
+        uint32_t pio_freq = (uint32_t)(sys_freq / eff_div / 4.0f);
+        shell_print(sh, "  Effective SWCLK: ~%u Hz", pio_freq);
+    }
+
+    return 0;
+}
+
+/* pio reset - clear PIO debug flags */
+static int cmd_pio_reset(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+
+    if (!pio_swd_initialized) {
+        shell_print(sh, "PIO SWD not initialized");
+        return 0;
+    }
+
+    PIO pio = PIO_SWD_PIO;
+    uint sm = PIO_SWD_SM;
+
+    /* Clear all debug flags for this SM */
+    uint32_t clear_mask = (1u << (PIO_FDEBUG_TXSTALL_LSB + sm)) |
+                          (1u << (PIO_FDEBUG_TXOVER_LSB + sm)) |
+                          (1u << (PIO_FDEBUG_RXUNDER_LSB + sm)) |
+                          (1u << (PIO_FDEBUG_RXSTALL_LSB + sm));
+    pio->fdebug = clear_mask;
+
+    shell_print(sh, "PIO debug flags cleared");
+    return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_pio,
+    SHELL_CMD(status, NULL, "Show PIO state machine status", cmd_pio_status),
+    SHELL_CMD(debug, NULL, "Show PIO debug registers", cmd_pio_debug),
+    SHELL_CMD(reset, NULL, "Clear PIO debug flags", cmd_pio_reset),
+    SHELL_SUBCMD_SET_END
+);
+
+SHELL_CMD_REGISTER(pio, &sub_pio, "PIO SWD diagnostics", NULL);
+
 #endif /* CONFIG_SOC_RP2040 */
