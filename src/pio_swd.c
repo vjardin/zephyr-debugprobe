@@ -469,26 +469,17 @@ uint8_t pio_swd_transfer(uint32_t request, uint32_t *data)
  */
 #include <zephyr/shell/shell.h>
 
-/* Helper to count used instruction slots by scanning for non-zero instructions */
-static int count_used_instructions(PIO pio)
-{
-    int count = 0;
-    for (int i = 0; i < 32; i++) {
-        if (pio->instr_mem[i] != 0) {
-            count++;
-        }
-    }
-    return count;
-}
-
 /* Helper to print one PIO block status */
-static void print_pio_block_status(const struct shell *sh, PIO pio, int pio_num)
+static void print_pio_block_status(const struct shell *sh, PIO pio, int pio_num,
+                                   int prog_offset, int prog_len)
 {
     shell_print(sh, "PIO%d:", pio_num);
 
-    /* Show instruction memory usage */
-    int used = count_used_instructions(pio);
-    shell_print(sh, "  Instructions: %d/32 used", used);
+    /* Show instruction memory usage if known */
+    if (prog_len > 0) {
+        shell_print(sh, "  Instructions: %d/32 (offset %d-%d)",
+                    prog_len, prog_offset, prog_offset + prog_len - 1);
+    }
 
     /* Show which SMs are enabled */
     int enabled_count = 0;
@@ -523,8 +514,17 @@ static int cmd_pio_all(const struct shell *sh, size_t argc, char **argv)
     ARG_UNUSED(argv);
 
     shell_print(sh, "RP2040 PIO Overview:");
-    print_pio_block_status(sh, pio0, 0);
-    print_pio_block_status(sh, pio1, 1);
+
+    /* PIO0 has the SWD program loaded */
+    if (pio_swd_initialized) {
+        print_pio_block_status(sh, pio0, 0, pio_program_offset,
+                               pio_swd_program.length);
+    } else {
+        print_pio_block_status(sh, pio0, 0, 0, 0);
+    }
+
+    /* PIO1 is unused */
+    print_pio_block_status(sh, pio1, 1, 0, 0);
 
     return 0;
 }
