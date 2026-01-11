@@ -368,7 +368,7 @@ int main(void)
         /* Wait a bit more for terminal to be ready, then print welcome */
         if (usb_configured) {
             uint32_t dtr = 0;
-            timeout = 20; /* 2 more seconds for DTR */
+            timeout = 50; /* 5 seconds for DTR - give user time to connect */
 
             while (timeout > 0) {
                 if (device_is_ready(cdc_dev)) {
@@ -381,11 +381,25 @@ int main(void)
                 timeout--;
             }
 
-            /* Print welcome message - matches original debugprobe */
+            /* Print welcome message with console test */
             printk("\n");
-            printk("Welcome to debugprobe!\n");
+            printk("========================================\n");
+            printk("    DEBUGPROBE CONSOLE TEST\n");
+            printk("========================================\n");
             printk("Version: %s (Zephyr)\n", DEBUGPROBE_VERSION);
             printk("Serial: %s\n", serial);
+            printk("\n");
+            printk("If you see this message, the console is working!\n");
+            printk("Waiting 3 seconds before continuing...\n");
+            printk("========================================\n\n");
+
+            /* Flash LEDs to show we're in console test mode */
+            for (int i = 0; i < 6; i++) {
+                led_dap_running(i % 2 == 0);
+                k_sleep(K_MSEC(500));
+            }
+
+            printk("Console test complete. Starting DAP...\n\n");
         }
     }
 

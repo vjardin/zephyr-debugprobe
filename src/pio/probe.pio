@@ -43,6 +43,7 @@
 // The SWCLK period is 4 PIO SM execution cycles.
 
 .program probe
+.origin 0       ; MUST be 0 - jmp instructions have hardcoded absolute targets
 .side_set 1 opt
 
 public write_cmd:

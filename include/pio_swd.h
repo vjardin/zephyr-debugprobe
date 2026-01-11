@@ -42,63 +42,74 @@
 
 #else
 /*
- * Pre-assembled PIO instructions (fallback when pioasm not available)
+ * Pre-assembled PIO instructions for probe.pio (standard version)
+ *
+ * This is the basic SWD probe program from the original debugprobe.
+ * It uses 1-bit optional side-set for SWCLK control only.
+ * Direction control is via PIO pindirs, not an external OE pin.
+ *
+ * Pin layout (consecutive from PROBE_PIN_OFFSET=12):
+ *   - GPIO12: SWCLK - Clock (side-set controlled)
+ *   - GPIO13: SWDI  - Data input from target (separate pin)
+ *   - GPIO14: SWDIO - Data output to target
+ *
+ * The level shifter has auto-direction sensing - no OE control needed.
  *
  * .program probe
  * .side_set 1 opt
  *
  * public write_cmd:
- * public turnaround_cmd:
+ * public turnaround_cmd:              ; Alias of write (offset 0)
  *     pull
- * write_bitloop:
- *     out pins, 1             [1]  side 0x0
- *     jmp x-- write_bitloop   [1]  side 0x1
+ * write_bitloop:                      ; offset 1
+ *     out pins, 1             [1]  side 0x0   ; Data output on negedge
+ *     jmp x-- write_bitloop   [1]  side 0x1   ; Captured by target on posedge
  *
  * .wrap_target
- * public get_next_cmd:
- *     pull                         side 0x0
- *     out x, 8
- *     out pindirs, 1
- *     out pc, 5
+ * public get_next_cmd:                ; offset 3
+ *     pull                         side 0x0   ; SWCLK initially low
+ *     out x, 8                                ; Get bit count
+ *     out pindirs, 1                          ; Set SWDIO direction
+ *     out pc, 5                               ; Go to command routine
  *
- * read_bitloop:
+ * read_bitloop:                       ; offset 7
  *     nop
- * public read_cmd:
- *     in pins, 1              [1]  side 0x1
+ * public read_cmd:                    ; offset 8
+ *     in pins, 1              [1]  side 0x1   ; Data captured on posedge
  *     jmp x-- read_bitloop         side 0x0
  *     push
- * .wrap
+ * .wrap                               ; offset 10
  */
 
 static const uint16_t pio_swd_program_instructions[] = {
-    /* 0: pull                       - write_cmd, turnaround_cmd */
+    /* 0: write_cmd/turnaround_cmd - pull */
     0x80a0,
-    /* 1: out pins, 1 [1] side 0x0   - write_bitloop */
-    0x6101,
-    /* 2: jmp x-- 1 [1] side 0x1     - continue write loop */
-    0x1541,
-    /* 3: pull side 0x0              - get_next_cmd (wrap_target) */
+    /* 1: out pins, 1 [1] side 0x0 */
+    0x7101,
+    /* 2: jmp x-- 1 [1] side 0x1 */
+    0x1941,
+    /* 3: get_next_cmd (wrap_target) - pull side 0x0 */
     0x90a0,
-    /* 4: out x, 8                   - get bit count */
+    /* 4: out x, 8 */
     0x6028,
-    /* 5: out pindirs, 1             - set SWDIO direction */
+    /* 5: out pindirs, 1 */
     0x6081,
-    /* 6: out pc, 5                  - jump to command routine */
+    /* 6: out pc, 5 */
     0x60a5,
-    /* 7: nop                        - read_bitloop (mov y, y) */
+    /* 7: read_bitloop - nop */
     0xa042,
-    /* 8: in pins, 1 [1] side 0x1    - read_cmd */
-    0x5501,
-    /* 9: jmp x-- 7 side 0x0         - continue read loop */
+    /* 8: read_cmd - in pins, 1 [1] side 0x1 */
+    0x5901,
+    /* 9: jmp x-- 7 side 0x0 */
     0x1047,
-    /* 10: push                      */
+    /* 10: push (wrap) */
     0x8020,
 };
 
 static const pio_program_t pio_swd_program = {
     .instructions = pio_swd_program_instructions,
     .length = ARRAY_SIZE(pio_swd_program_instructions),
-    .origin = -1,
+    .origin = 0,   /* MUST be 0 - jmp instructions have hardcoded absolute targets */
     .pio_version = 0,
 };
 
@@ -106,9 +117,9 @@ static const pio_program_t pio_swd_program = {
 #define PIO_SWD_WRAP_TARGET     3   /* get_next_cmd */
 #define PIO_SWD_WRAP            10  /* after push */
 
-/* Entry points (offsets) */
+/* Entry points (offsets) - turnaround_cmd = write_cmd (same entry) */
 #define PIO_SWD_OFFSET_WRITE_CMD      0
-#define PIO_SWD_OFFSET_TURNAROUND_CMD 0
+#define PIO_SWD_OFFSET_TURNAROUND_CMD 0   /* Alias of write_cmd */
 #define PIO_SWD_OFFSET_GET_NEXT_CMD   3
 #define PIO_SWD_OFFSET_READ_CMD       8
 

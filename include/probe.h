@@ -206,6 +206,13 @@ void probe_get_pin_info(int *swclk_pin, int *swdio_pin, int *reset_pin);
 bool probe_is_pio_enabled(void);
 
 /**
+ * @brief Enable/disable PIO acceleration (for debugging)
+ *
+ * @param enable true to use PIO, false for GPIO bit-bang
+ */
+void probe_set_pio_enabled(bool enable);
+
+/**
  * @brief Get system clock frequency
  *
  * @return System clock in Hz

@@ -66,3 +66,23 @@ uint32_t dap_vendor_command(const uint8_t *request, uint8_t *response);
  * @return Number of idle cycles
  */
 uint8_t dap_get_idle_cycles(void);
+
+/**
+ * @brief Get configured SWD turnaround period
+ *
+ * Returns the turnaround period (1-4 clock cycles) as configured
+ * by DAP_SWD_Configure command.
+ *
+ * @return Turnaround period in clock cycles
+ */
+uint8_t dap_get_swd_turnaround(void);
+
+/**
+ * @brief Get configured SWD data phase flag
+ *
+ * Returns whether data phase should be generated on WAIT/FAULT,
+ * as configured by DAP_SWD_Configure command.
+ *
+ * @return 1 if data phase should be generated, 0 otherwise
+ */
+uint8_t dap_get_swd_data_phase(void);

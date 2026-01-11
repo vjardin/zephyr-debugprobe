@@ -19,6 +19,10 @@
 #include "dap.h"
 #include "swo.h"
 
+#ifdef CONFIG_SOC_RP2040
+#include <hardware/gpio.h>
+#endif
+
 LOG_MODULE_REGISTER(dap, CONFIG_LOG_DEFAULT_LEVEL);
 
 /*
@@ -40,6 +44,10 @@ static uint16_t retry_count = 100;
 static uint16_t match_retry = 0;
 static uint32_t match_mask = 0xFFFFFFFF;
 
+/* SWD configuration */
+static uint8_t swd_turnaround = 1;  /* Default: 1 cycle (0 = 1 cycle per spec) */
+static uint8_t swd_data_phase = 0;  /* Default: no data phase on WAIT/FAULT */
+
 /* Current port */
 static uint8_t dap_port = DAP_PORT_DISABLED;
 
@@ -58,8 +66,48 @@ static volatile uint32_t stats_transfer_fault = 0;
 static volatile uint32_t stats_transfer_error = 0;
 static volatile uint32_t stats_retries = 0;
 
+/* DAP command counters - helps identify what pyocd is sending */
+static volatile uint32_t cmd_info = 0;
+static volatile uint32_t cmd_connect = 0;
+static volatile uint32_t cmd_disconnect = 0;
+static volatile uint32_t cmd_transfer = 0;
+static volatile uint32_t cmd_transfer_block = 0;
+static volatile uint32_t cmd_swj_sequence = 0;
+static volatile uint32_t cmd_swj_clock = 0;
+static volatile uint32_t cmd_swj_pins = 0;
+static volatile uint32_t cmd_swd_configure = 0;
+static volatile uint32_t cmd_transfer_configure = 0;
+static volatile uint32_t cmd_other = 0;
+static volatile uint32_t cmd_total = 0;
+
+/* Last command tracking for debugging */
+static volatile uint8_t last_transfer_req_count = 0;  /* Transfer requested count */
+static volatile uint8_t last_transfer_resp_count = 0; /* Transfer response count */
+static volatile uint8_t last_transfer_ack = 0;
+static volatile uint16_t last_block_req_count = 0;   /* TransferBlock requested count */
+static volatile uint16_t last_block_resp_count = 0;  /* TransferBlock response count */
+static volatile uint8_t last_block_ack = 0;
+
 /* Protocol tracing */
 static bool dap_trace_enabled = false;
+
+/* Dormant-to-SWD wakeup sequence (for ADIv5.2+ targets like Cortex-M33) */
+static const uint8_t dormant_wakeup_sequence[] = {
+    0x00,  /* 8 SWCLK cycles with SWDIO LOW */
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,  /* 64 bits HIGH */
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,  /* 64 bits HIGH (128 total) */
+    0x92, 0xf3, 0x09, 0x62, 0x95, 0x2d, 0x85, 0x86,  /* Selection Alert sequence */
+    0xe9, 0xaf, 0xdd, 0xe3, 0xa2, 0x0e, 0xbc, 0x19,
+    0xa0,  /* 4 bits LOW, 4 bits of activation code (0x0A) */
+};
+
+/* JTAG-to-SWD switch sequence (standard ARM sequence) */
+static const uint8_t jtag_to_swd_sequence[] = {
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,  /* 56 bits of 1s (line reset) */
+    0x9e, 0xe7,  /* JTAG-to-SWD: 0111 1001 1110 0111 (16 bits, LSB first) */
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,  /* 56 bits of 1s (line reset) */
+    0x00  /* 8 idle cycles */
+};
 
 /*
  * Get DAP Info String
@@ -197,6 +245,11 @@ static uint32_t dap_cmd_host_status(const uint8_t *request, uint8_t *response)
 
 /*
  * DAP_Connect command handler
+ *
+ * For ADIv5.2+ targets (like Cortex-M33 with APPROTECT), we send:
+ * 1. Dormant wakeup sequence - wakes target from dormant state
+ * 2. JTAG-to-SWD sequence - standard switch sequence
+ * This enables pyocd and other tools to connect without special handling.
  */
 static uint32_t dap_cmd_connect(const uint8_t *request, uint8_t *response)
 {
@@ -210,7 +263,7 @@ static uint32_t dap_cmd_connect(const uint8_t *request, uint8_t *response)
 
     switch (port) {
     case DAP_PORT_SWD:
-        /* Initialize SWD */
+        /* Initialize SWD - match original debugprobe behavior exactly */
         probe_port_enable(true);
         probe_pins_active();
         dap_port = DAP_PORT_SWD;
@@ -335,12 +388,31 @@ static uint32_t dap_cmd_transfer(const uint8_t *request, uint8_t *response)
             req_ptr += 4;
         }
 
-        /* Process posted read */
+        /* Process posted read - get data from previous AP read */
         if (post_read) {
-            if ((req_byte & DAP_TRANSFER_APnDP) && (req_byte & DAP_TRANSFER_RnW)) {
-                /* Read AP register - continue post read */
+            /* Check if this is a consecutive AP read (without match value) */
+            if ((req_byte & (DAP_TRANSFER_APnDP | DAP_TRANSFER_MATCH_VALUE)) == DAP_TRANSFER_APnDP) {
+                /* Consecutive AP read: send next read AND get previous data */
+                retry = retry_count;
+                do {
+                    ack = probe_swd_transfer(req_byte, &data);
+                } while ((ack == DAP_TRANSFER_WAIT) && retry--);
+
+                if (ack != DAP_TRANSFER_OK) {
+                    goto end;
+                }
+
+                /* Store previous AP read data */
+                *resp_ptr++ = (uint8_t)data;
+                *resp_ptr++ = (uint8_t)(data >> 8);
+                *resp_ptr++ = (uint8_t)(data >> 16);
+                *resp_ptr++ = (uint8_t)(data >> 24);
+
+                /* post_read stays 1, and we skip the main transfer section */
+                response_count++;
+                continue;
             } else {
-                /* Read DP RDBUFF */
+                /* Not an AP read - read DP RDBUFF to get last AP value */
                 retry = retry_count;
                 do {
                     ack = probe_swd_transfer(DAP_TRANSFER_RnW | DAP_DP_RDBUFF, &data);
@@ -484,16 +556,22 @@ static uint32_t dap_cmd_transfer(const uint8_t *request, uint8_t *response)
     }
 
 end:
-    /* Update statistics */
-    stats_transfers += response_count;
+    /* Update statistics - ensure Total = OK + WAIT + FAULT + ERROR */
     if (ack == DAP_TRANSFER_OK) {
+        stats_transfers += response_count;
         stats_transfer_ok += response_count;
-    } else if (ack == DAP_TRANSFER_WAIT) {
-        stats_transfer_wait++;
-    } else if (ack == DAP_TRANSFER_FAULT) {
-        stats_transfer_fault++;
     } else {
-        stats_transfer_error++;
+        /* response_count = successful transfers before failure
+         * Add 1 for the failed transfer itself */
+        stats_transfers += response_count + 1;
+        stats_transfer_ok += response_count;
+        if (ack == DAP_TRANSFER_WAIT) {
+            stats_transfer_wait++;
+        } else if (ack == DAP_TRANSFER_FAULT) {
+            stats_transfer_fault++;
+        } else {
+            stats_transfer_error++;
+        }
     }
 
     response[1] = (uint8_t)response_count;
@@ -603,7 +681,7 @@ static uint32_t dap_cmd_swj_clock(const uint8_t *request, uint8_t *response)
 }
 
 /*
- * DAP_SWJ_Sequence command handler
+ * DAP_SWJ_Sequence command handler - match original debugprobe exactly
  */
 static uint32_t dap_cmd_swj_sequence(const uint8_t *request, uint8_t *response)
 {
@@ -623,6 +701,10 @@ static uint32_t dap_cmd_swj_sequence(const uint8_t *request, uint8_t *response)
 
 /*
  * DAP_SWD_Configure command handler
+ *
+ * Configuration byte format:
+ *   Bits 0-1: Turnaround period (0=1 cycle, 1=2, 2=3, 3=4 cycles)
+ *   Bit 2: DataPhase (0=no data phase on WAIT/FAULT, 1=always data phase)
  */
 static uint32_t dap_cmd_swd_configure(const uint8_t *request, uint8_t *response)
 {
@@ -631,9 +713,11 @@ static uint32_t dap_cmd_swd_configure(const uint8_t *request, uint8_t *response)
     response[0] = DAP_CMD_SWD_CONFIGURE;
     response[1] = DAP_OK;
 
-    /* Turnaround period (bits 0-1) and DataPhase (bit 2) */
-    /* These are handled in the SWD implementation */
-    ARG_UNUSED(cfg);
+    /* Extract turnaround period: 0-3 means 1-4 cycles */
+    swd_turnaround = (cfg & 0x03) + 1;
+
+    /* Extract data phase flag */
+    swd_data_phase = (cfg >> 2) & 0x01;
 
     return 2;
 }
@@ -784,16 +868,22 @@ static uint32_t dap_cmd_transfer_block(const uint8_t *request, uint8_t *response
     }
 
 end:
-    /* Update statistics */
-    stats_transfers += response_count;
+    /* Update statistics - ensure Total = OK + WAIT + FAULT + ERROR */
     if (ack == DAP_TRANSFER_OK) {
+        stats_transfers += response_count;
         stats_transfer_ok += response_count;
-    } else if (ack == DAP_TRANSFER_WAIT) {
-        stats_transfer_wait++;
-    } else if (ack == DAP_TRANSFER_FAULT) {
-        stats_transfer_fault++;
     } else {
-        stats_transfer_error++;
+        /* response_count = successful transfers before failure
+         * Add 1 for the failed transfer itself */
+        stats_transfers += response_count + 1;
+        stats_transfer_ok += response_count;
+        if (ack == DAP_TRANSFER_WAIT) {
+            stats_transfer_wait++;
+        } else if (ack == DAP_TRANSFER_FAULT) {
+            stats_transfer_fault++;
+        } else {
+            stats_transfer_error++;
+        }
     }
 
     response[1] = (uint8_t)response_count;
@@ -1467,92 +1557,155 @@ uint32_t dap_process_request(const uint8_t *request, uint32_t request_len,
     ARG_UNUSED(request_len);
     ARG_UNUSED(response_max);
 
+    cmd_total++;
+
+    /* Trace every command if enabled */
+    if (dap_trace_enabled) {
+        if (cmd == DAP_CMD_TRANSFER) {
+            LOG_INF("DAP cmd=0x%02x (Transfer) count=%u", cmd, request[2]);
+        } else if (cmd == DAP_CMD_TRANSFER_BLOCK) {
+            uint16_t count = (uint16_t)request[2] | ((uint16_t)request[3] << 8);
+            LOG_INF("DAP cmd=0x%02x (TransferBlock) count=%u req=0x%02x",
+                    cmd, count, request[4]);
+        } else {
+            LOG_INF("DAP cmd=0x%02x", cmd);
+        }
+    }
+
     switch (cmd) {
     case DAP_CMD_INFO:
+        cmd_info++;
         response_len = dap_cmd_info(request, response);
         break;
     case DAP_CMD_HOST_STATUS:
+        cmd_other++;
         response_len = dap_cmd_host_status(request, response);
         break;
     case DAP_CMD_CONNECT:
+        cmd_connect++;
         response_len = dap_cmd_connect(request, response);
         break;
     case DAP_CMD_DISCONNECT:
+        cmd_disconnect++;
         response_len = dap_cmd_disconnect(request, response);
         break;
     case DAP_CMD_TRANSFER_CONFIGURE:
+        cmd_transfer_configure++;
         response_len = dap_cmd_transfer_configure(request, response);
         break;
     case DAP_CMD_TRANSFER:
+        cmd_transfer++;
+        /* Track request count before processing */
+        last_transfer_req_count = request[2];
         response_len = dap_cmd_transfer(request, response);
+        /* Track response count after processing */
+        last_transfer_resp_count = response[1];
+        last_transfer_ack = response[2];
+        /* Record for USB packet trace */
+        usb_dap_trace_transfer(last_transfer_req_count, last_transfer_resp_count,
+                               last_transfer_ack);
         break;
     case DAP_CMD_TRANSFER_BLOCK:
+        cmd_transfer_block++;
+        /* Track request count before processing */
+        last_block_req_count = (uint16_t)request[2] | ((uint16_t)request[3] << 8);
         response_len = dap_cmd_transfer_block(request, response);
+        /* Track response count after processing */
+        last_block_resp_count = (uint16_t)response[1] | ((uint16_t)response[2] << 8);
+        last_block_ack = response[3];
+        /* Debug: log if mismatch */
+        if (last_block_req_count != last_block_resp_count && dap_trace_enabled) {
+            LOG_WRN("TransferBlock: req=%u resp=%u ack=%u resp_len=%u",
+                    last_block_req_count, last_block_resp_count,
+                    last_block_ack, response_len);
+        }
         break;
     case DAP_CMD_TRANSFER_ABORT:
+        cmd_other++;
         response_len = dap_cmd_transfer_abort(request, response);
         break;
     case DAP_CMD_WRITE_ABORT:
+        cmd_other++;
         response_len = dap_cmd_write_abort(request, response);
         break;
     case DAP_CMD_DELAY:
+        cmd_other++;
         response_len = dap_cmd_delay(request, response);
         break;
     case DAP_CMD_SWJ_PINS:
+        cmd_swj_pins++;
         response_len = dap_cmd_swj_pins(request, response);
         break;
     case DAP_CMD_SWJ_CLOCK:
+        cmd_swj_clock++;
         response_len = dap_cmd_swj_clock(request, response);
         break;
     case DAP_CMD_SWJ_SEQUENCE:
+        cmd_swj_sequence++;
         response_len = dap_cmd_swj_sequence(request, response);
         break;
     case DAP_CMD_SWD_CONFIGURE:
+        cmd_swd_configure++;
         response_len = dap_cmd_swd_configure(request, response);
         break;
     case DAP_CMD_JTAG_SEQUENCE:
+        cmd_other++;
         response_len = dap_cmd_jtag_sequence(request, response);
         break;
     case DAP_CMD_JTAG_CONFIGURE:
+        cmd_other++;
         response_len = dap_cmd_jtag_configure(request, response);
         break;
     case DAP_CMD_JTAG_IDCODE:
+        cmd_other++;
         response_len = dap_cmd_jtag_idcode(request, response);
         break;
     case DAP_CMD_SWD_SEQUENCE:
+        cmd_other++;
         response_len = dap_cmd_swd_sequence(request, response);
         break;
     case DAP_CMD_RESET_TARGET:
+        cmd_other++;
         response_len = dap_cmd_reset_target(request, response);
         break;
     case DAP_CMD_SWO_TRANSPORT:
+        cmd_other++;
         response_len = dap_cmd_swo_transport(request, response);
         break;
     case DAP_CMD_SWO_MODE:
+        cmd_other++;
         response_len = dap_cmd_swo_mode(request, response);
         break;
     case DAP_CMD_SWO_BAUDRATE:
+        cmd_other++;
         response_len = dap_cmd_swo_baudrate(request, response);
         break;
     case DAP_CMD_SWO_CONTROL:
+        cmd_other++;
         response_len = dap_cmd_swo_control(request, response);
         break;
     case DAP_CMD_SWO_STATUS:
+        cmd_other++;
         response_len = dap_cmd_swo_status(request, response);
         break;
     case DAP_CMD_SWO_EXT_STATUS:
+        cmd_other++;
         response_len = dap_cmd_swo_ext_status(request, response);
         break;
     case DAP_CMD_SWO_DATA:
+        cmd_other++;
         response_len = dap_cmd_swo_data(request, response);
         break;
     case DAP_CMD_QUEUE_COMMANDS:
+        cmd_other++;
         response_len = dap_cmd_queue_commands(request, response);
         break;
     case DAP_CMD_EXECUTE_COMMANDS:
+        cmd_other++;
         response_len = dap_cmd_execute_commands(request, response);
         break;
     default:
+        cmd_other++;
         /* Unknown command */
         if (cmd >= DAP_CMD_VENDOR_BASE) {
             /* Vendor command - pass to vendor handler */
@@ -1565,6 +1718,18 @@ uint32_t dap_process_request(const uint8_t *request, uint32_t request_len,
         break;
     }
 
+    /* Trace response if enabled */
+    if (dap_trace_enabled && response_len > 0) {
+        if (cmd == DAP_CMD_TRANSFER) {
+            LOG_INF("  -> resp_len=%u count=%u ack=%u",
+                    response_len, response[1], response[2]);
+        } else if (cmd == DAP_CMD_TRANSFER_BLOCK) {
+            uint16_t count = (uint16_t)response[1] | ((uint16_t)response[2] << 8);
+            LOG_INF("  -> resp_len=%u count=%u ack=%u",
+                    response_len, count, response[3]);
+        }
+    }
+
     return response_len;
 }
 
@@ -1574,6 +1739,22 @@ uint32_t dap_process_request(const uint8_t *request, uint32_t request_len,
 uint8_t dap_get_idle_cycles(void)
 {
     return idle_cycles;
+}
+
+/*
+ * Get configured SWD turnaround period (1-4 cycles)
+ */
+uint8_t dap_get_swd_turnaround(void)
+{
+    return swd_turnaround;
+}
+
+/*
+ * Get configured SWD data phase flag
+ */
+uint8_t dap_get_swd_data_phase(void)
+{
+    return swd_data_phase;
 }
 
 /*
@@ -1592,19 +1773,84 @@ static const char *dap_port_str(uint8_t port)
     }
 }
 
+/* External USB stats function */
+extern void usb_dap_get_stats(uint32_t *out_pkts, uint32_t *out_zlp, uint32_t *in_pkts,
+                              uint32_t *in_bytes, uint32_t *errors, uint32_t *disabled_drops,
+                              uint8_t *last_cmd, uint8_t *last_resp,
+                              uint32_t *last_req_len, uint32_t *last_resp_len);
+extern void usb_dap_get_ringbuf_stats(uint32_t *req_wptr, uint32_t *req_rptr,
+                                      uint32_t *resp_wptr, uint32_t *resp_rptr,
+                                      uint32_t *req_full, uint32_t *resp_empty,
+                                      uint32_t *max_pending);
+extern void usb_dap_reset_stats(void);
+extern void usb_dap_trace_enable(bool enable);
+extern void usb_dap_dump_trace(void);
+extern void usb_dap_trace_transfer(uint8_t req_count, uint8_t resp_count, uint8_t ack);
+
 /* dap stats - show DAP status and transfer statistics */
 static int cmd_dap_stats(const struct shell *sh, size_t argc, char **argv)
 {
     ARG_UNUSED(argc);
     ARG_UNUSED(argv);
 
+    uint32_t usb_out, usb_zlp, usb_in, usb_bytes, usb_err, usb_drops;
+    uint8_t last_cmd_usb, last_resp_usb;
+    uint32_t last_req_len, last_resp_len;
+
+    usb_dap_get_stats(&usb_out, &usb_zlp, &usb_in, &usb_bytes, &usb_err, &usb_drops,
+                      &last_cmd_usb, &last_resp_usb, &last_req_len, &last_resp_len);
+
     shell_print(sh, "DAP Status:");
     shell_print(sh, "  Port: %s", dap_port_str(dap_port));
     shell_print(sh, "  Clock: %u Hz", probe_get_swj_clock());
+    shell_print(sh, "  SWD: turnaround=%u cycles, data_phase=%s",
+                swd_turnaround, swd_data_phase ? "on" : "off");
+    shell_print(sh, "  Transfer: idle=%u cycles, retry=%u, match_retry=%u",
+                idle_cycles, retry_count, match_retry);
     shell_print(sh, "  Connected: %s", led_connect_state ? "yes" : "no");
     shell_print(sh, "  Running: %s", led_running_state ? "yes" : "no");
     shell_print(sh, "  Trace: %s", dap_trace_enabled ? "on" : "off");
-    shell_print(sh, "Transfer Statistics:");
+
+    shell_print(sh, "USB Layer:");
+    shell_print(sh, "  OUT packets: %u (ZLP: %u)", usb_out, usb_zlp);
+    shell_print(sh, "  IN packets: %u (%u bytes)", usb_in, usb_bytes);
+    shell_print(sh, "  Errors: %u, Disabled drops: %u", usb_err, usb_drops);
+    shell_print(sh, "  Last: cmd=0x%02x req_len=%u, resp=0x%02x resp_len=%u",
+                last_cmd_usb, last_req_len, last_resp_usb, last_resp_len);
+    shell_print(sh, "  OUT-IN balance: %d", (int)(usb_out - usb_zlp - usb_in));
+
+    /* Ring buffer stats */
+    uint32_t req_wptr, req_rptr, resp_wptr, resp_rptr;
+    uint32_t req_full, resp_empty, max_pending;
+    usb_dap_get_ringbuf_stats(&req_wptr, &req_rptr, &resp_wptr, &resp_rptr,
+                              &req_full, &resp_empty, &max_pending);
+    shell_print(sh, "Ring Buffer:");
+    shell_print(sh, "  Request: w=%u r=%u pending=%u (was_full=%u)",
+                req_wptr, req_rptr, req_wptr - req_rptr, req_full);
+    shell_print(sh, "  Response: w=%u r=%u pending=%u (was_empty=%u)",
+                resp_wptr, resp_rptr, resp_wptr - resp_rptr, resp_empty);
+    shell_print(sh, "  Max pending: %u", max_pending);
+
+    shell_print(sh, "DAP Commands:");
+    shell_print(sh, "  Total: %u", cmd_total);
+    shell_print(sh, "  Info: %u, Connect: %u, Disconnect: %u",
+                cmd_info, cmd_connect, cmd_disconnect);
+    shell_print(sh, "  Transfer: %u, TransferBlock: %u",
+                cmd_transfer, cmd_transfer_block);
+    shell_print(sh, "  SWJ_Seq: %u, SWJ_Clock: %u, SWJ_Pins: %u",
+                cmd_swj_sequence, cmd_swj_clock, cmd_swj_pins);
+    shell_print(sh, "  SWD_Cfg: %u, Transfer_Cfg: %u, Other: %u",
+                cmd_swd_configure, cmd_transfer_configure, cmd_other);
+
+    shell_print(sh, "Last Transfer:");
+    shell_print(sh, "  DAP_Transfer: req=%u resp=%u ack=%u%s",
+                last_transfer_req_count, last_transfer_resp_count, last_transfer_ack,
+                (last_transfer_req_count != last_transfer_resp_count) ? " MISMATCH!" : "");
+    shell_print(sh, "  DAP_TransferBlock: req=%u resp=%u ack=%u%s",
+                last_block_req_count, last_block_resp_count, last_block_ack,
+                (last_block_req_count != last_block_resp_count) ? " MISMATCH!" : "");
+
+    shell_print(sh, "SWD Transfers:");
     shell_print(sh, "  Total: %u", stats_transfers);
     shell_print(sh, "  OK: %u", stats_transfer_ok);
     shell_print(sh, "  WAIT: %u (exhausted retries)", stats_transfer_wait);
@@ -1621,6 +1867,7 @@ static int cmd_dap_reset(const struct shell *sh, size_t argc, char **argv)
     ARG_UNUSED(argc);
     ARG_UNUSED(argv);
 
+    /* Reset SWD transfer stats */
     stats_transfers = 0;
     stats_transfer_ok = 0;
     stats_transfer_wait = 0;
@@ -1628,7 +1875,32 @@ static int cmd_dap_reset(const struct shell *sh, size_t argc, char **argv)
     stats_transfer_error = 0;
     stats_retries = 0;
 
-    shell_print(sh, "Statistics reset");
+    /* Reset DAP command counters */
+    cmd_info = 0;
+    cmd_connect = 0;
+    cmd_disconnect = 0;
+    cmd_transfer = 0;
+    cmd_transfer_block = 0;
+    cmd_swj_sequence = 0;
+    cmd_swj_clock = 0;
+    cmd_swj_pins = 0;
+    cmd_swd_configure = 0;
+    cmd_transfer_configure = 0;
+    cmd_other = 0;
+    cmd_total = 0;
+
+    /* Reset last transfer tracking */
+    last_transfer_req_count = 0;
+    last_transfer_resp_count = 0;
+    last_transfer_ack = 0;
+    last_block_req_count = 0;
+    last_block_resp_count = 0;
+    last_block_ack = 0;
+
+    /* Reset USB stats */
+    usb_dap_reset_stats();
+
+    shell_print(sh, "All statistics reset");
     return 0;
 }
 
@@ -1684,9 +1956,11 @@ static int cmd_dap_trace(const struct shell *sh, size_t argc, char **argv)
 
     if (strcmp(argv[1], "on") == 0) {
         dap_trace_enabled = true;
-        shell_print(sh, "DAP trace enabled");
+        usb_dap_trace_enable(true);  /* Also enable USB packet trace */
+        shell_print(sh, "DAP trace enabled (including USB packet trace)");
     } else if (strcmp(argv[1], "off") == 0) {
         dap_trace_enabled = false;
+        usb_dap_trace_enable(false);
         shell_print(sh, "DAP trace disabled");
     } else {
         shell_print(sh, "Usage: dap trace <on|off>");
@@ -1696,12 +1970,541 @@ static int cmd_dap_trace(const struct shell *sh, size_t argc, char **argv)
     return 0;
 }
 
+/* dap dump - dump USB packet trace */
+static int cmd_dap_dump(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+
+    shell_print(sh, "Dumping USB packet trace to log...");
+    usb_dap_dump_trace();
+    return 0;
+}
+
+/* dap hwreset - toggle hardware reset pin */
+static int cmd_dap_hwreset(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+
+    shell_print(sh, "Hardware Reset:");
+    shell_print(sh, "  Asserting reset...");
+    probe_set_reset(true);
+    k_msleep(100);
+    shell_print(sh, "  Releasing reset...");
+    probe_set_reset(false);
+    k_msleep(100);
+    shell_print(sh, "  Done");
+    return 0;
+}
+
+/* dap pio - toggle PIO/GPIO mode */
+static int cmd_dap_pio(const struct shell *sh, size_t argc, char **argv)
+{
+    if (argc < 2) {
+        shell_print(sh, "PIO mode: %s", probe_is_pio_enabled() ? "enabled" : "disabled (GPIO bit-bang)");
+        shell_print(sh, "Usage: dap pio <on|off>");
+        return 0;
+    }
+
+    if (strcmp(argv[1], "on") == 0 || strcmp(argv[1], "1") == 0) {
+        probe_set_pio_enabled(true);
+        shell_print(sh, "PIO mode: %s", probe_is_pio_enabled() ? "enabled" : "failed to enable");
+    } else if (strcmp(argv[1], "off") == 0 || strcmp(argv[1], "0") == 0) {
+        probe_set_pio_enabled(false);
+        shell_print(sh, "PIO mode: disabled (GPIO bit-bang)");
+    } else {
+        shell_print(sh, "Usage: dap pio <on|off>");
+    }
+
+    return 0;
+}
+
+/* dap rawtest - detailed SWD debug with bit-by-bit trace */
+static int cmd_dap_rawtest(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+
+    shell_print(sh, "SWD Raw Transaction Debug:");
+
+    /* Disable PIO, force GPIO bit-bang for debugging */
+    bool was_pio = probe_is_pio_enabled();
+    probe_set_pio_enabled(false);
+    shell_print(sh, "  Using GPIO bit-bang mode");
+
+    /* Enable port */
+    probe_port_enable(true);
+
+    /* Set very slow clock for debugging */
+    probe_set_swj_clock(10000);  /* 10kHz */
+    shell_print(sh, "  Clock: 10 kHz (very slow for debug)");
+
+    /* First check pin states in current mode */
+    int swclk, swdio, reset;
+    probe_get_pin_state(&swclk, &swdio, &reset);
+    shell_print(sh, "  Initial pins (output mode): SWCLK=%d SWDIO=%d nRST=%d", swclk, swdio, reset);
+
+    /* Check what's actually on the bus by switching to input */
+    shell_print(sh, "  Reading bus (input mode)...");
+    probe_read_bit();  /* Force switch to input */
+    probe_get_pin_state(&swclk, &swdio, &reset);
+    shell_print(sh, "  Bus state (before any SWD): SWDIO=%d", swdio);
+
+#ifdef CONFIG_SOC_RP2040
+    /* Debug Probe: read from SWDI (GPIO13) which is separate input path */
+    int swdi_val = gpio_get(PROBE_SWDI_PIN);
+    shell_print(sh, "  SWDI (input pin): %d", swdi_val);
+    if (swdio == 0 || swdi_val == 0) {
+        shell_print(sh, "  WARNING: Line is LOW before we start!");
+        shell_print(sh, "  (Target may be driving or not connected)");
+    }
+#else
+    if (swdio == 0) {
+        shell_print(sh, "  WARNING: SWDIO LOW before we start!");
+    }
+#endif
+
+    /* Send line reset sequence manually - 56 clocks with SWDIO high */
+    shell_print(sh, "  Sending line reset (56 clocks with SWDIO HIGH)...");
+    uint8_t reset_seq[] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+    probe_swj_sequence(56, reset_seq);
+
+    /* Check SWDIO state after reset */
+    probe_get_pin_state(&swclk, &swdio, &reset);
+#ifdef CONFIG_SOC_RP2040
+    int sdk_swdio = gpio_get(PROBE_SWDIO_PIN);
+    int sdk_swdi = gpio_get(PROBE_SWDI_PIN);
+    shell_print(sh, "  After line reset: SWDIO(out)=%d, SWDI(in)=%d",
+                sdk_swdio, sdk_swdi);
+
+    /* Check GPIO function and try to fix */
+    uint32_t gpio_ctrl = *(volatile uint32_t *)(0x40014000 + PROBE_SWDIO_PIN * 8 + 4);
+    shell_print(sh, "  GPIO%d function: %d (5=SIO, 6=PIO0, 7=PIO1)",
+                PROBE_SWDIO_PIN, gpio_ctrl & 0x1f);
+
+    /* Manually drive HIGH and check */
+    gpio_put(PROBE_SWDIO_PIN, 1);
+    k_busy_wait(10);
+    shell_print(sh, "  After manual drive HIGH: SDK=%d", gpio_get(PROBE_SWDIO_PIN));
+
+    /* Try forcing back to SIO function */
+    gpio_set_function(PROBE_SWDIO_PIN, GPIO_FUNC_SIO);
+    gpio_set_dir(PROBE_SWDIO_PIN, GPIO_OUT);
+    gpio_put(PROBE_SWDIO_PIN, 1);
+    k_busy_wait(10);
+    shell_print(sh, "  After force SIO + drive HIGH: SDK=%d", gpio_get(PROBE_SWDIO_PIN));
+#else
+    shell_print(sh, "  After line reset (output mode): SWDIO=%d", swdio);
+#endif
+
+    /* Now switch to INPUT mode and see what's actually on the bus */
+    shell_print(sh, "  Switching to INPUT mode to read bus...");
+    probe_read_bit();  /* This switches to input mode */
+    probe_get_pin_state(&swclk, &swdio, &reset);
+    shell_print(sh, "  Bus state (input mode): SWDIO=%d", swdio);
+
+    /* Send JTAG-to-SWD switch */
+    shell_print(sh, "  Sending JTAG-to-SWD (0xE79E)...");
+    uint8_t switch_seq[] = {0x9e, 0xe7};
+    probe_swj_sequence(16, switch_seq);
+
+    /* Another line reset */
+    probe_swj_sequence(56, reset_seq);
+
+    /* Idle clocks */
+    uint8_t idle[] = {0x00};
+    probe_swj_sequence(8, idle);
+
+    /* Check SWDIO again */
+    probe_get_pin_state(&swclk, &swdio, &reset);
+    shell_print(sh, "  After switch+reset: SWDIO=%d", swdio);
+
+    /* Now try to read DPIDR with verbose output */
+    shell_print(sh, "  Building DPIDR read request...");
+
+    /* Request: Start=1, APnDP=0, RnW=1, A[2:3]=00, Parity=1, Stop=0, Park=1
+     * Bit pattern: 1 0 1 00 1 0 1 = 0b10100101 = 0xA5
+     */
+    uint8_t req = 0xA5;
+    shell_print(sh, "  Request byte: 0x%02X", req);
+    shell_print(sh, "    Start=1, APnDP=0, RnW=1, A=00, Par=1, Stop=0, Park=1");
+
+    /* Do the transfer and capture ACK */
+    uint32_t dpidr = 0;
+    uint32_t request = DAP_TRANSFER_RnW;  /* DP read, address 0 */
+    uint8_t ack = probe_swd_transfer(request, &dpidr);
+
+    shell_print(sh, "  ACK bits: %d%d%d (value=%u)",
+                (ack >> 0) & 1, (ack >> 1) & 1, (ack >> 2) & 1, ack);
+
+#ifdef CONFIG_SOC_RP2040
+    /* Extra debug: check SWDI state right now */
+    int swdi_after = gpio_get(PROBE_SWDI_PIN);
+    shell_print(sh, "  SWDI after transfer: %d", swdi_after);
+#endif
+
+    if (ack == DAP_TRANSFER_OK) {
+        shell_print(sh, "  DPIDR: 0x%08X - SUCCESS!", dpidr);
+    } else if (ack == 0) {
+        shell_print(sh, "  ACK=0: Target holding SWDIO LOW");
+        shell_print(sh, "");
+        shell_print(sh, "  Trying connect-under-reset...");
+
+        /* Assert reset and hold it */
+        probe_set_reset(true);
+        k_msleep(10);
+
+        /* Do full SWD init while in reset */
+        probe_swj_sequence(sizeof(jtag_to_swd_sequence) * 8, jtag_to_swd_sequence);
+
+        /* Try DPIDR while still in reset */
+        ack = probe_swd_transfer(request, &dpidr);
+        shell_print(sh, "  While in reset - ACK: %u", ack);
+
+        if (ack == DAP_TRANSFER_OK) {
+            shell_print(sh, "  DPIDR: 0x%08X - SUCCESS with connect-under-reset!", dpidr);
+            /* Release reset */
+            probe_set_reset(false);
+        } else {
+            /* Release reset and try dormant wakeup */
+            probe_set_reset(false);
+            k_msleep(10);
+
+            shell_print(sh, "  Trying dormant wakeup sequence...");
+
+            /* Hardware reset first */
+            probe_set_reset(true);
+            k_msleep(50);
+            probe_set_reset(false);
+            k_msleep(10);
+
+            /* Send dormant wakeup */
+            probe_swj_sequence(sizeof(dormant_wakeup_sequence) * 8, dormant_wakeup_sequence);
+
+            /* Then JTAG-to-SWD */
+            probe_swj_sequence(sizeof(jtag_to_swd_sequence) * 8, jtag_to_swd_sequence);
+
+            /* Check bus state */
+            probe_read_bit();
+            probe_get_pin_state(&swclk, &swdio, &reset);
+            shell_print(sh, "  After dormant wakeup: SWDIO=%d", swdio);
+
+            /* Try DPIDR again */
+            ack = probe_swd_transfer(request, &dpidr);
+            shell_print(sh, "  Third attempt ACK: %u", ack);
+            if (ack == DAP_TRANSFER_OK) {
+                shell_print(sh, "  DPIDR: 0x%08X - SUCCESS with dormant wakeup!", dpidr);
+            } else {
+                shell_print(sh, "  Still failing. Target may have APPROTECT enabled.");
+            }
+        }
+    } else if (ack == 7) {
+        shell_print(sh, "  ACK=7: No response (SWDIO floating HIGH)");
+        shell_print(sh, "  Target not responding - check connections");
+    } else {
+        shell_print(sh, "  Unexpected ACK=%u", ack);
+    }
+
+#ifdef CONFIG_SOC_RP2040
+    /* Extra detailed debug: manual bit-bang with GPIO state at each step */
+    shell_print(sh, "\n  Manual bit-bang debug:");
+
+    /* Re-do JTAG-to-SWD sequence */
+    probe_swj_sequence(sizeof(jtag_to_swd_sequence) * 8, jtag_to_swd_sequence);
+
+    /* Set very slow clock (1 kHz) for manual debugging */
+    probe_set_swj_clock(1000);
+
+    /* Manual request: 0xA5 LSB first */
+    gpio_set_function(PROBE_SWCLK_PIN, GPIO_FUNC_SIO);
+    gpio_set_function(PROBE_SWDIO_PIN, GPIO_FUNC_SIO);
+    gpio_set_dir(PROBE_SWCLK_PIN, GPIO_OUT);
+    gpio_set_dir(PROBE_SWDIO_PIN, GPIO_OUT);
+    gpio_put(PROBE_SWCLK_PIN, 0);
+
+    shell_print(sh, "    Before request - SWDI=%d", gpio_get(PROBE_SWDI_PIN));
+
+    /* Write 8 request bits manually */
+    uint8_t req_bits = 0xA5;
+    for (int i = 0; i < 8; i++) {
+        gpio_put(PROBE_SWDIO_PIN, (req_bits >> i) & 1);
+        k_busy_wait(100);
+        gpio_put(PROBE_SWCLK_PIN, 1);
+        k_busy_wait(100);
+        gpio_put(PROBE_SWCLK_PIN, 0);
+    }
+
+    shell_print(sh, "    After request - SWDI=%d", gpio_get(PROBE_SWDI_PIN));
+
+    /* Turnaround - tristate SWDIO */
+    gpio_set_dir(PROBE_SWDIO_PIN, GPIO_IN);
+    shell_print(sh, "    After tristate - SWDI=%d", gpio_get(PROBE_SWDI_PIN));
+
+    k_busy_wait(100);
+    gpio_put(PROBE_SWCLK_PIN, 1);  /* Turnaround rising */
+    shell_print(sh, "    Turnaround HIGH - SWDI=%d", gpio_get(PROBE_SWDI_PIN));
+    k_busy_wait(100);
+    gpio_put(PROBE_SWCLK_PIN, 0);  /* Turnaround falling */
+    shell_print(sh, "    Turnaround LOW - SWDI=%d", gpio_get(PROBE_SWDI_PIN));
+
+    /* Read 3 ACK bits */
+    uint8_t manual_ack = 0;
+    for (int i = 0; i < 3; i++) {
+        k_busy_wait(100);
+        gpio_put(PROBE_SWCLK_PIN, 1);
+        int bit = gpio_get(PROBE_SWDI_PIN);
+        shell_print(sh, "    ACK[%d] on HIGH - SWDI=%d", i, bit);
+        manual_ack |= (bit << i);
+        k_busy_wait(100);
+        gpio_put(PROBE_SWCLK_PIN, 0);
+    }
+
+    shell_print(sh, "    Manual ACK result: %u (0x%x)", manual_ack, manual_ack);
+#endif
+
+    /* Restore PIO mode if it was enabled */
+    if (was_pio) {
+        probe_set_pio_enabled(true);
+    }
+
+    return 0;
+}
+
+/* dap scan - try to detect target on SWD bus */
+static int cmd_dap_scan(const struct shell *sh, size_t argc, char **argv)
+{
+    bool use_dormant = false;
+    bool use_hwreset = false;
+
+    /* Parse options */
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-d") == 0 || strcmp(argv[i], "--dormant") == 0) {
+            use_dormant = true;
+        } else if (strcmp(argv[i], "-r") == 0 || strcmp(argv[i], "--reset") == 0) {
+            use_hwreset = true;
+        }
+    }
+
+    uint32_t dpidr = 0;
+    uint8_t ack;
+
+    shell_print(sh, "SWD Target Scan:");
+
+    /* Enable SWD port */
+    probe_port_enable(true);
+    shell_print(sh, "  Port enabled");
+
+    /* Hardware reset if requested */
+    if (use_hwreset) {
+        shell_print(sh, "  Hardware reset...");
+        probe_set_reset(true);
+        k_msleep(50);
+        probe_set_reset(false);
+        k_msleep(50);
+    }
+
+    /* Set a slow clock for initial detection (100kHz) */
+    probe_set_swj_clock(100000);
+    shell_print(sh, "  Clock: 100 kHz (slow for detection)");
+
+    /* Send dormant wakeup if requested */
+    if (use_dormant) {
+        shell_print(sh, "  Sending dormant wakeup sequence...");
+        probe_swj_sequence(sizeof(dormant_wakeup_sequence) * 8, dormant_wakeup_sequence);
+    }
+
+    /* Send JTAG-to-SWD switch sequence */
+    shell_print(sh, "  Sending JTAG-to-SWD sequence...");
+    probe_swj_sequence(sizeof(jtag_to_swd_sequence) * 8, jtag_to_swd_sequence);
+
+    /* Try to read DPIDR (Debug Port ID Register) */
+    /* SWD read: APnDP=0 (DP), RnW=1 (Read), A[2:3]=0 (DPIDR at addr 0) */
+    /* Request byte: Start=1, APnDP=0, RnW=1, A=00, Parity, Stop=0, Park=1 */
+    shell_print(sh, "  Reading DPIDR...");
+
+    /* Use the probe transfer function */
+    uint32_t request = DAP_TRANSFER_RnW;  /* DP read, address 0 */
+    ack = probe_swd_transfer(request, &dpidr);
+
+    shell_print(sh, "  ACK: %u (%s)", ack,
+                ack == 1 ? "OK" :
+                ack == 2 ? "WAIT" :
+                ack == 4 ? "FAULT" : "NO RESPONSE");
+
+    if (ack == DAP_TRANSFER_OK) {
+        shell_print(sh, "  DPIDR: 0x%08x", dpidr);
+        shell_print(sh, "    Designer: 0x%03x", (dpidr >> 1) & 0x7FF);
+        shell_print(sh, "    Version: %u", (dpidr >> 12) & 0xF);
+        shell_print(sh, "    Revision: %u", (dpidr >> 28) & 0xF);
+        shell_print(sh, "  Result: TARGET FOUND!");
+        return 0;
+    }
+
+    /* Normal connection failed - try multiple recovery approaches */
+    shell_print(sh, "  Normal connection failed (ACK=%u), trying recovery...", ack);
+
+#ifdef CONFIG_SOC_RP2040
+    /* Use GPIO bit-bang for recovery - more reliable for tricky targets */
+    bool was_pio = probe_is_pio_enabled();
+    if (was_pio) {
+        probe_set_pio_enabled(false);
+    }
+
+    /* Try 1: Fresh JTAG-to-SWD sequence */
+    shell_print(sh, "  Attempt 1: Fresh init sequence...");
+    probe_swj_sequence(sizeof(jtag_to_swd_sequence) * 8, jtag_to_swd_sequence);
+    ack = probe_swd_transfer(request, &dpidr);
+
+    if (ack != DAP_TRANSFER_OK) {
+        /* Try 2: Dormant wakeup + init */
+        shell_print(sh, "  Attempt 2: Dormant wakeup...");
+        probe_swj_sequence(sizeof(dormant_wakeup_sequence) * 8, dormant_wakeup_sequence);
+        probe_swj_sequence(sizeof(jtag_to_swd_sequence) * 8, jtag_to_swd_sequence);
+        ack = probe_swd_transfer(request, &dpidr);
+    }
+
+    if (ack != DAP_TRANSFER_OK) {
+        /* Try 3: Multiple init sequences (like manual bit-bang) */
+        shell_print(sh, "  Attempt 3: Multiple init sequences...");
+        for (int i = 0; i < 3 && ack != DAP_TRANSFER_OK; i++) {
+            probe_swj_sequence(sizeof(jtag_to_swd_sequence) * 8, jtag_to_swd_sequence);
+            ack = probe_swd_transfer(request, &dpidr);
+        }
+    }
+
+    if (ack == DAP_TRANSFER_OK) {
+        shell_print(sh, "  Recovery SUCCESS!");
+        shell_print(sh, "  DPIDR: 0x%08x", dpidr);
+        shell_print(sh, "    Designer: 0x%03x", (dpidr >> 1) & 0x7FF);
+        shell_print(sh, "    Version: %u", (dpidr >> 12) & 0xF);
+        shell_print(sh, "    Revision: %u", (dpidr >> 28) & 0xF);
+
+        /* Restore PIO mode */
+        if (was_pio) {
+            probe_set_pio_enabled(true);
+        }
+        return 0;
+    }
+
+    /* Restore PIO mode */
+    if (was_pio) {
+        probe_set_pio_enabled(true);
+    }
+#endif
+
+    shell_print(sh, "  Result: No target detected (ACK=%u)", ack);
+    shell_print(sh, "  Possible causes:");
+    shell_print(sh, "    - Target not powered");
+    shell_print(sh, "    - SWD lines not connected");
+    shell_print(sh, "    - Wrong pins (check SWCLK/SWDIO)");
+    shell_print(sh, "    - Target has debug protection enabled");
+
+    return 0;
+}
+
+/* dap piotest - Compare PIO vs GPIO transfer modes */
+static int cmd_dap_piotest(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+
+#ifndef CONFIG_SOC_RP2040
+    shell_print(sh, "PIO test only available on RP2040");
+    return 0;
+#else
+    uint32_t dpidr;
+    uint8_t ack;
+    uint32_t request = DAP_TRANSFER_RnW;  /* DP read DPIDR */
+
+    shell_print(sh, "PIO vs GPIO Mode Comparison Test:");
+    shell_print(sh, "==================================");
+
+    /* First wake up the target using GPIO mode (known to work) */
+    shell_print(sh, "\n1. Waking target with GPIO bit-bang...");
+    probe_set_pio_enabled(false);
+    probe_port_enable(true);
+    probe_set_swj_clock(100000);
+
+    /* Send multiple init sequences to wake up */
+    probe_swj_sequence(sizeof(dormant_wakeup_sequence) * 8, dormant_wakeup_sequence);
+    for (int i = 0; i < 3; i++) {
+        probe_swj_sequence(sizeof(jtag_to_swd_sequence) * 8, jtag_to_swd_sequence);
+    }
+    ack = probe_swd_transfer(request, &dpidr);
+    shell_print(sh, "   GPIO mode ACK: %u, DPIDR: 0x%08x", ack, dpidr);
+
+    if (ack != DAP_TRANSFER_OK) {
+        shell_print(sh, "   FAILED to wake target - cannot continue test");
+        return -1;
+    }
+    shell_print(sh, "   Target awake!");
+
+    /* Now test: Can we read with PIO immediately after GPIO woke it up? */
+    shell_print(sh, "\n2. Switching to PIO mode (no re-init)...");
+    probe_set_pio_enabled(true);
+
+    /* Try reading without any new sequences - target should still be awake */
+    ack = probe_swd_transfer(request, &dpidr);
+    shell_print(sh, "   PIO read (no init): ACK=%u, DPIDR=0x%08x", ack, dpidr);
+
+    if (ack == DAP_TRANSFER_OK) {
+        shell_print(sh, "   SUCCESS! PIO works after GPIO wakeup");
+    } else {
+        shell_print(sh, "   FAILED! PIO cannot read even after GPIO wakeup");
+        shell_print(sh, "   This suggests PIO has a fundamental issue");
+
+        /* Try sending sequences via PIO */
+        shell_print(sh, "\n3. Sending init via PIO...");
+        probe_swj_sequence(sizeof(jtag_to_swd_sequence) * 8, jtag_to_swd_sequence);
+        ack = probe_swd_transfer(request, &dpidr);
+        shell_print(sh, "   PIO after PIO init: ACK=%u, DPIDR=0x%08x", ack, dpidr);
+    }
+
+    /* Test: Switch back to GPIO and verify it still works */
+    shell_print(sh, "\n4. Back to GPIO mode...");
+    probe_set_pio_enabled(false);
+    ack = probe_swd_transfer(request, &dpidr);
+    shell_print(sh, "   GPIO read: ACK=%u, DPIDR=0x%08x", ack, dpidr);
+
+    /* Summary */
+    shell_print(sh, "\n5. Diagnosis:");
+    probe_set_pio_enabled(true);
+    ack = probe_swd_transfer(request, &dpidr);
+    uint8_t pio_ack = ack;
+
+    probe_set_pio_enabled(false);
+    ack = probe_swd_transfer(request, &dpidr);
+    uint8_t gpio_ack = ack;
+
+    shell_print(sh, "   PIO mode:  ACK=%u", pio_ack);
+    shell_print(sh, "   GPIO mode: ACK=%u", gpio_ack);
+
+    if (gpio_ack == DAP_TRANSFER_OK && pio_ack != DAP_TRANSFER_OK) {
+        shell_print(sh, "\n   CONCLUSION: PIO transfer implementation has a bug!");
+        shell_print(sh, "   GPIO works, PIO doesn't - issue is in pio_swd_transfer()");
+    } else if (gpio_ack != DAP_TRANSFER_OK && pio_ack != DAP_TRANSFER_OK) {
+        shell_print(sh, "\n   CONCLUSION: Target went back to sleep");
+    } else {
+        shell_print(sh, "\n   CONCLUSION: Both modes working!");
+    }
+
+    return 0;
+#endif
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_dap,
     SHELL_CMD(stats, NULL, "Show DAP status and statistics", cmd_dap_stats),
     SHELL_CMD(reset, NULL, "Reset statistics counters", cmd_dap_reset),
+    SHELL_CMD(hwreset, NULL, "Toggle hardware reset pin", cmd_dap_hwreset),
+    SHELL_CMD(pio, NULL, "Enable/disable PIO mode (on|off)", cmd_dap_pio),
+    SHELL_CMD(piotest, NULL, "Compare PIO vs GPIO transfer modes", cmd_dap_piotest),
     SHELL_CMD(clock, NULL, "Show clock configuration", cmd_dap_clock),
     SHELL_CMD(pins, NULL, "Show SWD pin states", cmd_dap_pins),
     SHELL_CMD(trace, NULL, "Enable/disable protocol tracing", cmd_dap_trace),
+    SHELL_CMD(dump, NULL, "Dump USB packet trace to log", cmd_dap_dump),
+    SHELL_CMD(scan, NULL, "Scan for SWD target [-r reset] [-d dormant]", cmd_dap_scan),
+    SHELL_CMD(rawtest, NULL, "Detailed SWD debug with bit trace", cmd_dap_rawtest),
     SHELL_SUBCMD_SET_END
 );
 

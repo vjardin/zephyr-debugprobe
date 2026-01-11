@@ -19,8 +19,10 @@
 /* Debug Probe Hardware Pin Assignments */
 #if defined(CONFIG_BOARD_RPI_PICO) || defined(CONFIG_BOARD_RPI_PICO_W)
 /* Pico board configuration (DEBUG_ON_PICO mode) */
+#define PROBE_PIN_OFFSET        2     /* Base pin for PIO consecutive pins */
 #define PROBE_SWCLK_PIN         2
 #define PROBE_SWDIO_PIN         3
+#define PROBE_SWDI_PIN          PROBE_SWDIO_PIN  /* Same pin on Pico (no separate input) */
 #define PROBE_SWDIR_PIN         (-1)  /* Direction control (not used on Pico) */
 #define PROBE_RESET_PIN         6     /* Target reset */
 
@@ -44,11 +46,25 @@
 #define PROBE_IO_OEN            (-1)
 
 #else
-/* Debug Probe Hardware configuration */
-#define PROBE_SWCLK_PIN         11
-#define PROBE_SWDIO_PIN         12
-#define PROBE_SWDIR_PIN         13
-#define PROBE_RESET_PIN         14
+/* Debug Probe Hardware configuration
+ *
+ * From original board_debug_probe_config.h - the Debug Probe uses:
+ *   - SWCLK (GPIO12): Clock output
+ *   - SWDI (GPIO13): Data INPUT from target (separate pin via level shifter)
+ *   - SWDIO (GPIO14): Data OUTPUT to target (via level shifter)
+ *
+ * The level shifter has auto-direction sensing - no OE or direction control.
+ * The input and output paths are separate, which is why SWDI != SWDIO.
+ *
+ * Pin offset for PIO: 12 (consecutive pins for SWCLK=12, then either SWDI or SWDIO)
+ * Note: The probe.pio program (not probe_oen.pio) is used since there's no SWDIOEN.
+ */
+#define PROBE_PIN_OFFSET        12    /* Base pin for PIO consecutive pins */
+#define PROBE_SWCLK_PIN         12    /* SWCLK output */
+#define PROBE_SWDI_PIN          13    /* SWDI - Data input from target */
+#define PROBE_SWDIO_PIN         14    /* SWDIO - Data output to target */
+#define PROBE_SWDIR_PIN         (-1)  /* No direction control */
+#define PROBE_RESET_PIN         (-1)  /* No reset pin on Debug Probe */
 
 /* JTAG pins for Debug Probe (TDI/TDO not available on hardware) */
 #define PROBE_TCK_PIN           PROBE_SWCLK_PIN  /* TCK = SWCLK */
@@ -79,8 +95,8 @@
 /* Legacy alias for backward compatibility */
 #define PROBE_DAP_LED           PROBE_DAP_RUNNING_LED
 
-/* Output enable for level shifters */
-#define PROBE_IO_OEN            10
+/* No level shifter output enable on Debug Probe - auto-direction sensing */
+#define PROBE_IO_OEN            (-1)
 #endif
 
 /* JTAG availability check */
@@ -91,7 +107,10 @@
 /* USB Configuration */
 #define CFG_TUD_HID_EP_BUFSIZE  64
 #define DAP_PACKET_SIZE         64
-#define DAP_PACKET_COUNT        4
+/* Packet count for USB buffering.
+ * Must be at least 2 for ring buffer logic to work (modulo N-1 check).
+ * Value of 2 matches original debugprobe and enables pyocd pipelining. */
+#define DAP_PACKET_COUNT        2
 
 /* UART Configuration */
 #ifndef CONFIG_DEBUGPROBE_UART_BAUDRATE

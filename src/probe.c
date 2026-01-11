@@ -24,6 +24,7 @@
 
 #ifdef CONFIG_SOC_RP2040
 #include "pio_swd.h"
+#include <hardware/gpio.h>
 #endif
 
 LOG_MODULE_REGISTER(probe, CONFIG_LOG_DEFAULT_LEVEL);
@@ -117,39 +118,51 @@ static inline void clock_delay(void)
 }
 
 /*
- * Set SWDIO direction - using devicetree GPIO specs
+ * Set SWDIO direction - Debug Probe Hardware Model
+ *
+ * The Debug Probe has SEPARATE input/output paths with auto-direction level shifter:
+ *   - SWCLK (GPIO12): Clock output
+ *   - SWDI (GPIO13): Input from target (always reads from target side)
+ *   - SWDIO (GPIO14): Output to target
+ *
+ * The level shifter auto-senses direction - no explicit OE/direction control needed.
+ * SWDI is always receiving from the target, SWDIO is always transmitting to target.
+ * Direction control is just about enabling/disabling our output driver (pindir).
+ *
+ * To write: Set SWDIO pindir=output, write to SWDIO
+ * To read: Set SWDIO pindir=input (tristate), read from SWDI
  */
 static inline void swdio_set_dir_out(void)
 {
-#if USE_DT_GPIO
+#ifdef CONFIG_SOC_RP2040
+    /* When PIO is enabled, direction is controlled by PIO via `out pindirs, 1`.
+     * Do NOT call gpio_set_function here - it would override the PIO function!
+     * Only set direction for GPIO bit-bang mode.
+     */
+    if (!use_pio_swd) {
+        gpio_set_function(PROBE_SWDIO_PIN, GPIO_FUNC_SIO);
+        gpio_set_dir(PROBE_SWDIO_PIN, GPIO_OUT);
+    }
+#elif USE_DT_GPIO
     gpio_pin_configure_dt(&swdio_gpio, GPIO_OUTPUT);
-#if HAS_SWDIR_GPIO
-    gpio_pin_set_dt(&swdir_gpio, 1);
-#endif
 #else
     gpio_pin_configure(gpio_dev, PROBE_SWDIO_PIN, GPIO_OUTPUT);
-#ifdef PROBE_SWDIR_PIN
-    if (PROBE_SWDIR_PIN >= 0) {
-        gpio_pin_set(gpio_dev, PROBE_SWDIR_PIN, 1);
-    }
-#endif
 #endif
 }
 
 static inline void swdio_set_dir_in(void)
 {
-#if USE_DT_GPIO
+#ifdef CONFIG_SOC_RP2040
+    /* When PIO is enabled, direction is controlled by PIO.
+     * Only set direction for GPIO bit-bang mode.
+     */
+    if (!use_pio_swd) {
+        gpio_set_dir(PROBE_SWDIO_PIN, GPIO_IN);
+    }
+#elif USE_DT_GPIO
     gpio_pin_configure_dt(&swdio_gpio, GPIO_INPUT);
-#if HAS_SWDIR_GPIO
-    gpio_pin_set_dt(&swdir_gpio, 0);
-#endif
 #else
     gpio_pin_configure(gpio_dev, PROBE_SWDIO_PIN, GPIO_INPUT);
-#ifdef PROBE_SWDIR_PIN
-    if (PROBE_SWDIR_PIN >= 0) {
-        gpio_pin_set(gpio_dev, PROBE_SWDIR_PIN, 0);
-    }
-#endif
 #endif
 }
 
@@ -158,7 +171,9 @@ static inline void swdio_set_dir_in(void)
  */
 static inline void swclk_set(int val)
 {
-#if USE_DT_GPIO
+#ifdef CONFIG_SOC_RP2040
+    gpio_put(PROBE_SWCLK_PIN, val);
+#elif USE_DT_GPIO
     gpio_pin_set_dt(&swclk_gpio, val);
 #else
     gpio_pin_set(gpio_dev, PROBE_SWCLK_PIN, val);
@@ -170,7 +185,9 @@ static inline void swclk_set(int val)
  */
 static inline void swdio_set(int val)
 {
-#if USE_DT_GPIO
+#ifdef CONFIG_SOC_RP2040
+    gpio_put(PROBE_SWDIO_PIN, val);
+#elif USE_DT_GPIO
     gpio_pin_set_dt(&swdio_gpio, val);
 #else
     gpio_pin_set(gpio_dev, PROBE_SWDIO_PIN, val);
@@ -179,7 +196,14 @@ static inline void swdio_set(int val)
 
 static inline int swdio_get(void)
 {
-#if USE_DT_GPIO
+#ifdef CONFIG_SOC_RP2040
+    /* Read from SWDI (GPIO13), the separate input path on Debug Probe */
+#if defined(PROBE_SWDI_PIN) && (PROBE_SWDI_PIN >= 0)
+    return gpio_get(PROBE_SWDI_PIN);
+#else
+    return gpio_get(PROBE_SWDIO_PIN);
+#endif
+#elif USE_DT_GPIO
     return gpio_pin_get_dt(&swdio_gpio);
 #else
     return gpio_pin_get(gpio_dev, PROBE_SWDIO_PIN);
@@ -303,13 +327,15 @@ int probe_gpio_init(void)
 #endif
 
 #if HAS_SWDIR_GPIO
-    /* Configure direction control pin if available */
+    /* Configure direction control pin if available
+     * SWDIR is active low for output: start with SWDIR=0 (output mode)
+     */
     if (gpio_is_ready_dt(&swdir_gpio)) {
-        ret = gpio_pin_configure_dt(&swdir_gpio, GPIO_OUTPUT_ACTIVE);
+        ret = gpio_pin_configure_dt(&swdir_gpio, GPIO_OUTPUT_INACTIVE);
         if (ret < 0) {
             LOG_WRN("Failed to configure SWDIR pin: %d", ret);
         } else {
-            LOG_DBG("SWDIR configured on %s pin %d",
+            LOG_DBG("SWDIR configured on %s pin %d (active low)",
                     swdir_gpio.port->name, swdir_gpio.pin);
         }
     }
@@ -349,10 +375,22 @@ int probe_gpio_init(void)
         return ret;
     }
 
+#if defined(PROBE_SWDI_PIN) && (PROBE_SWDI_PIN >= 0)
+    /* Configure SWDI as input for reading from target
+     * Debug Probe has separate input/output paths through level shifter
+     */
+    gpio_init(PROBE_SWDI_PIN);
+    gpio_set_dir(PROBE_SWDI_PIN, GPIO_IN);
+    gpio_pull_up(PROBE_SWDI_PIN);
+    LOG_DBG("SWDI configured on GPIO%d as input", PROBE_SWDI_PIN);
+#endif
+
 #ifdef PROBE_SWDIR_PIN
-    /* Configure direction control pin if present */
+    /* Configure direction control pin if present
+     * SWDIR is active low for output: start with SWDIR=0 (output mode)
+     */
     if (PROBE_SWDIR_PIN >= 0) {
-        ret = gpio_pin_configure(gpio_dev, PROBE_SWDIR_PIN, GPIO_OUTPUT_ACTIVE);
+        ret = gpio_pin_configure(gpio_dev, PROBE_SWDIR_PIN, GPIO_OUTPUT_INACTIVE);
         if (ret < 0) {
             LOG_WRN("Failed to configure SWDIR pin");
         }
@@ -384,13 +422,19 @@ int probe_gpio_init(void)
     update_clock_delay();
 
 #ifdef CONFIG_SOC_RP2040
-    /* Initialize PIO SWD for hardware acceleration */
+    /* Initialize PIO SWD for hardware acceleration.
+     * PIO provides deterministic timing required for SWD protocol compliance,
+     * especially for APPROTECT targets like nRF91 that need precise timing
+     * for dormant wakeup sequences.
+     *
+     * The original debugprobe uses PIO for all SWD operations.
+     */
     if (pio_swd_init() == 0) {
         use_pio_swd = true;
         LOG_INF("PIO SWD acceleration enabled");
     } else {
         use_pio_swd = false;
-        LOG_WRN("PIO SWD init failed, using GPIO bit-bang");
+        LOG_WRN("PIO SWD init failed, using GPIO bit-bang (may have timing issues)");
     }
 #endif
 
@@ -506,6 +550,11 @@ uint8_t probe_swd_transfer(uint32_t request, uint32_t *data)
 
     /* Turnaround */
     swdio_set_dir_in();
+    /* Allow level shifter to switch direction - Debug Probe has auto-direction
+     * sensing which needs time to detect we've released the bus.
+     * Without this delay, we read our own driven value instead of target's.
+     */
+    k_busy_wait(10);
     clock_delay();
     swclk_set(1);
     clock_delay();
@@ -645,18 +694,19 @@ void probe_set_reset(bool assert)
 
 /*
  * Enable/disable SWD port
+ *
+ * On Debug Probe hardware with auto-direction level shifter, there's no
+ * explicit enable pin. We just track the connected state.
  */
 void probe_port_enable(bool enable)
 {
-#if USE_DT_GPIO && HAS_IO_EN_GPIO
-    gpio_pin_set_dt(&io_en_gpio, enable ? 1 : 0);
-#elif !USE_DT_GPIO
-#ifdef PROBE_IO_OEN
-    if (PROBE_IO_OEN >= 0) {
-        gpio_pin_set(gpio_dev, PROBE_IO_OEN, enable ? 1 : 0);
+    if (enable) {
+        /* Configure pins for active SWD */
+        swdio_set_dir_out();
+    } else {
+        /* Tristate output when disabled */
+        swdio_set_dir_in();
     }
-#endif
-#endif
     swd_connected = enable;
     LOG_INF("SWD port %s", enable ? "enabled" : "disabled");
 }
@@ -674,6 +724,18 @@ bool probe_is_connected(void)
  */
 void probe_pins_hiz(void)
 {
+#ifdef CONFIG_SOC_RP2040
+    /* When PIO is active, pins are controlled by PIO. We can set SWDIO
+     * direction to input via PIO to release the bus, but don't reconfigure
+     * the GPIO function which would break PIO control.
+     */
+    if (use_pio_swd) {
+        /* Set SWDIO to input via PIO command */
+        pio_swd_read_mode();
+        LOG_DBG("Probe pins in Hi-Z (PIO)");
+        return;
+    }
+#endif
 #if USE_DT_GPIO
     gpio_pin_configure_dt(&swclk_gpio, GPIO_INPUT);
     gpio_pin_configure_dt(&swdio_gpio, GPIO_INPUT);
@@ -697,12 +759,26 @@ void probe_pins_hiz(void)
  */
 void probe_pins_active(void)
 {
+#ifdef CONFIG_SOC_RP2040
+    /* When PIO is enabled, SWCLK is controlled by PIO side-set and SWDIO
+     * direction is controlled by PIO via `out pindirs`. Don't reconfigure.
+     */
+    if (!use_pio_swd) {
+#if USE_DT_GPIO
+        gpio_pin_configure_dt(&swclk_gpio, GPIO_OUTPUT_INACTIVE);
+#else
+        gpio_pin_configure(gpio_dev, PROBE_SWCLK_PIN, GPIO_OUTPUT_INACTIVE);
+#endif
+        swdio_set_dir_out();
+    }
+#else
 #if USE_DT_GPIO
     gpio_pin_configure_dt(&swclk_gpio, GPIO_OUTPUT_INACTIVE);
     swdio_set_dir_out();
 #else
     gpio_pin_configure(gpio_dev, PROBE_SWCLK_PIN, GPIO_OUTPUT_INACTIVE);
     swdio_set_dir_out();
+#endif
 #endif
     LOG_DBG("Probe pins active");
 }
@@ -712,6 +788,12 @@ void probe_pins_active(void)
  */
 int probe_read_bit(void)
 {
+#ifdef CONFIG_SOC_RP2040
+    if (use_pio_swd) {
+        /* Use PIO for single-bit read when PIO owns the pins */
+        return pio_swd_read_bits(1) & 1;
+    }
+#endif
     int bit;
     swdio_set_dir_in();
     clock_delay();
@@ -727,6 +809,13 @@ int probe_read_bit(void)
  */
 void probe_write_bit(int bit)
 {
+#ifdef CONFIG_SOC_RP2040
+    if (use_pio_swd) {
+        /* Use PIO for single-bit write when PIO owns the pins */
+        pio_swd_write_bits(1, bit & 1);
+        return;
+    }
+#endif
     swdio_set_dir_out();
     swdio_set(bit);
     clock_delay();
@@ -1259,6 +1348,42 @@ bool probe_is_pio_enabled(void)
     return use_pio_swd;
 #else
     return false;
+#endif
+}
+
+/*
+ * Enable/disable PIO acceleration (for debugging)
+ */
+void probe_set_pio_enabled(bool enable)
+{
+#ifdef CONFIG_SOC_RP2040
+    if (enable && !use_pio_swd) {
+        /* Re-initialize PIO */
+        if (pio_swd_init() == 0) {
+            use_pio_swd = true;
+            LOG_INF("PIO SWD re-enabled");
+        }
+    } else if (!enable && use_pio_swd) {
+        /* Switch to GPIO mode */
+        pio_swd_deinit();
+        use_pio_swd = false;
+        /* Re-init GPIO pins for bit-bang using SDK calls to ensure SIO function */
+        gpio_set_function(PROBE_SWCLK_PIN, GPIO_FUNC_SIO);
+        gpio_set_dir(PROBE_SWCLK_PIN, GPIO_OUT);
+        gpio_put(PROBE_SWCLK_PIN, 0);
+        gpio_set_function(PROBE_SWDIO_PIN, GPIO_FUNC_SIO);
+        gpio_set_dir(PROBE_SWDIO_PIN, GPIO_OUT);
+        gpio_put(PROBE_SWDIO_PIN, 0);
+        /* Ensure SWDI is configured as input for reading from target */
+#if defined(PROBE_SWDI_PIN) && (PROBE_SWDI_PIN >= 0)
+        gpio_init(PROBE_SWDI_PIN);
+        gpio_set_dir(PROBE_SWDI_PIN, GPIO_IN);
+        gpio_pull_up(PROBE_SWDI_PIN);
+#endif
+        LOG_INF("PIO SWD disabled, using GPIO bit-bang");
+    }
+#else
+    ARG_UNUSED(enable);
 #endif
 }
 
