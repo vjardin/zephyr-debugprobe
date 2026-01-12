@@ -109,8 +109,8 @@
 #define DAP_PACKET_SIZE         64
 /* Packet count for USB buffering.
  * Must be at least 2 for ring buffer logic to work (modulo N-1 check).
- * Value of 2 matches original debugprobe and enables pyocd pipelining. */
-#define DAP_PACKET_COUNT        2
+ * Value of 4 allows more pipelining depth than original debugprobe (2). */
+#define DAP_PACKET_COUNT        4
 
 /* UART Configuration */
 #ifndef CONFIG_DEBUGPROBE_UART_BAUDRATE
