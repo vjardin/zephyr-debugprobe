@@ -258,7 +258,7 @@ TBD: use openOCD/west flash
 | CONFIG_DEBUGPROBE_CDC_UART      | y       | Enable CDC-UART bridge         |
 | CONFIG_DEBUGPROBE_DAP           | y       | Enable CMSIS-DAP interface     |
 | CONFIG_DEBUGPROBE_UART_BAUDRATE | 115200  | Default UART baud rate         |
-| CONFIG_DEBUGPROBE_DAP_CLOCK_HZ  | 1000000 | SWD clock frequency            |
+| CONFIG_DEBUGPROBE_DAP_CLOCK_HZ  | 10000000 | SWD clock frequency (10 MHz)  |
 | CONFIG_DEBUGPROBE_TX_LED        | y       | Enable TX activity LED         |
 | CONFIG_DEBUGPROBE_RX_LED        | y       | Enable RX activity LED         |
 | CONFIG_DEBUGPROBE_DAP_LED       | y       | Enable DAP activity LED        |
@@ -448,6 +448,40 @@ The PIO programs handle:
 - Data shifting (SWDIO read/write)
 - Direction control (for level shifters via `probe_oen.pio`)
 - Protocol timing (4 PIO cycles per SWD bit)
+
+## Benchmark
+
+Memory read throughput measured on nRF9151 target reading 64KB from RAM:
+
+```bash
+time pyocd cmd -t nrf91 -f <freq> -c "read32 0x20000000 16384" > /dev/null
+```
+
+### SWD Clock vs Throughput
+
+| SWD Frequency | Time | Throughput | Status         |
+|---------------|------|------------|----------------|
+| 100 kHz       | 4.7s | 14 KB/s    | SWD-limited    |
+| 1 MHz         | 2.1s | 31 KB/s    | SWD-limited    |
+| 5 MHz         | 1.9s | 34 KB/s    | OK             |
+| 10 MHz        | 1.9s | 35 KB/s    | OK             |
+| 15 MHz        | 1.9s | 35 KB/s    | Max reliable   |
+| 18 MHz        | -    | -          | ACK errors     |
+| 20 MHz        | -    | -          | ACK errors     |
+
+### Zephyr vs Original Debugprobe
+
+| Implementation      | Time  | Throughput |
+|---------------------|-------|------------|
+| Zephyr port         | 1.85s | 35.4 KB/s  |
+| Original debugprobe | 1.70s | 38.6 KB/s  |
+
+Key findings:
+
+- Maximum reliable SWD clock depends on target and wiring (~15 MHz in this test)
+- Throughput plateaus above 5 MHz due to USB Full-Speed (12 Mbps) bottleneck
+- Zephyr port achieves ~92% of original debugprobe throughput
+- Both implementations are USB-limited at higher SWD frequencies
 
 ## Differences from Original
 
