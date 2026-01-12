@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Vincent Jardin <vjardin@free.fr>
+#
 # Debugprobe Zephyr Port - CMakeLists.txt
 #
 # This is a port of the Raspberry Pi Debug Probe firmware from FreeRTOS to Zephyr.

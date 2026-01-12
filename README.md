@@ -597,6 +597,27 @@ debugprobe:~$ dap pins
 4. Build System: West/CMake instead of CMake only
 5. PIO Access: Via Zephyr's PIO driver or direct hardware access
 
+## Acknowledgments
+
+This project would not exist without the excellent work done by the Raspberry Pi team
+on the original [debugprobe](https://github.com/raspberrypi/debugprobe) firmware. Their
+FreeRTOS-based implementation demonstrated how to build a high-performance CMSIS-DAP
+debug probe using the RP2040's unique PIO (Programmable I/O) hardware, achieving SWD
+speeds that far exceed what traditional GPIO bit-banging can offer.
+
+We are grateful for Raspberry Pi's decision to release the debugprobe under the MIT
+license, making it possible for the community to learn from, adapt, and build upon
+their work. The PIO state machine programs and the overall architecture of the original
+firmware served as an invaluable reference throughout this port.
+
+This project aims to provide a Zephyr-native equivalent of the original debugprobe,
+preserving the same high-performance PIO-based SWD implementation while embracing
+Zephyr's ecosystem. Whether you prefer FreeRTOS or Zephyr, you can now enjoy the
+same great debugging experience on Raspberry Pi hardware.
+
+Thank you, Raspberry Pi, for creating such a useful tool and sharing it with the
+embedded community.
+
 ## License
 
 MIT License - See individual source files for details.

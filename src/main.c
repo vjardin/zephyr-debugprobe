@@ -1,4 +1,6 @@
 /* SPDX-License-Identifier: MIT
+ * Copyright (c) 2021-2023 Raspberry Pi (Trading) Ltd.
+ * Copyright (c) 2026 Vincent Jardin <vjardin@free.fr>
  *
  * Debugprobe Zephyr Port - Main Entry Point
  *

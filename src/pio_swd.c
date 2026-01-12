@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 Vincent Jardin <vjardin@free.fr>
  *
  * Debugprobe Zephyr Port - PIO-based SWD Implementation
  *
