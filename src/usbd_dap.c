@@ -19,7 +19,6 @@
 #include "probe_config.h"
 #include "DAP_config.h"  /* For ID_DAP_QueueCommands/ExecuteCommands */
 #include "dap.h"
-#include "led.h"
 
 LOG_MODULE_REGISTER(usbd_dap, LOG_LEVEL_INF);
 
@@ -474,16 +473,12 @@ static void usb_dap_proc_entry(void *p1, void *p2, void *p3)
             }
 
             /* Now process command from local buffer */
-            led_dap_connected(true);
-
             rlen = dap_process_request(req_buf, DAP_PACKET_SIZE,
                                        resp_buf, DAP_PACKET_SIZE);
 
             usb_last_resp = resp_buf[0];
             usb_last_resp_len = rlen;
             resp_len = rlen;
-
-            led_dap_connected(false);
 
             /* Write response to response ring buffer.
              * Use scheduler lock like original's vTaskSuspendAll */
@@ -554,7 +549,6 @@ static int dap_request_handler(struct usbd_class_data *const c_data,
         usb_in_seq++;
         usb_in_packets++;
         add_trace(1, usb_last_resp, usb_last_resp_len);
-        led_dap_running(true);
 
         /* Advance response read pointer */
         usb_response_buf.rptr++;
@@ -680,8 +674,7 @@ static void dap_enable(struct usbd_class_data *const c_data)
 
     LOG_INF("CMSIS-DAP class enabled");
 
-    /* Turn on DAP LED to show class was enabled */
-    led_dap_running(true);
+    /* Note: DAP LEDs are controlled by host via DAP_HostStatus command */
 
     /* Reset ring buffers */
     usb_request_buf.wptr = 0;

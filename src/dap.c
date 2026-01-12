@@ -18,6 +18,7 @@
 #include "probe.h"
 #include "dap.h"
 #include "swo.h"
+#include "led.h"
 
 #ifdef CONFIG_SOC_RP2040
 #include <hardware/gpio.h>
@@ -230,11 +231,11 @@ static uint32_t dap_cmd_host_status(const uint8_t *request, uint8_t *response)
     switch (type) {
     case DAP_STATUS_CONNECT:
         led_connect_state = (status != 0);
-        /* TODO: Control connected LED */
+        led_dap_connected(led_connect_state);
         break;
     case DAP_STATUS_RUNNING:
         led_running_state = (status != 0);
-        /* TODO: Control running LED */
+        led_dap_running(led_running_state);
         break;
     default:
         break;
