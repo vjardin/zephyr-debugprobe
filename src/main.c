@@ -41,45 +41,13 @@
 LOG_MODULE_REGISTER(debugprobe, CONFIG_LOG_DEFAULT_LEVEL);
 
 #ifdef CONFIG_USB_DEVICE_STACK_NEXT
-/* Thread stacks */
+/* Thread stacks - only UART thread needed, DAP uses usbd_dap.c's thread */
 #ifdef CONFIG_DEBUGPROBE_CDC_UART
 K_THREAD_STACK_DEFINE(uart_thread_stack, UART_THREAD_STACK_SIZE);
-#endif
-#ifdef CONFIG_DEBUGPROBE_DAP
-K_THREAD_STACK_DEFINE(dap_thread_stack, DAP_THREAD_STACK_SIZE);
-#endif
-K_THREAD_STACK_DEFINE(usb_thread_stack, USB_THREAD_STACK_SIZE);
-
-/* Thread control blocks */
-#ifdef CONFIG_DEBUGPROBE_CDC_UART
 static struct k_thread uart_thread_data;
-#endif
-#ifdef CONFIG_DEBUGPROBE_DAP
-static struct k_thread dap_thread_data;
-#endif
-static struct k_thread usb_thread_data;
-
-/* Thread IDs */
-#ifdef CONFIG_DEBUGPROBE_CDC_UART
 static k_tid_t uart_tid;
-#endif
-#ifdef CONFIG_DEBUGPROBE_DAP
-static k_tid_t dap_tid;
-#endif
-static k_tid_t usb_tid;
-
-/* Synchronization primitives */
-#ifdef CONFIG_DEBUGPROBE_DAP
-K_SEM_DEFINE(dap_request_sem, 0, 1);
-K_SEM_DEFINE(dap_response_sem, 0, 1);
-
-/* DAP buffers */
-static uint8_t tx_data_buffer[CFG_TUD_HID_EP_BUFSIZE];
-static uint8_t rx_data_buffer[CFG_TUD_HID_EP_BUFSIZE];
-#endif
 
 /* Ring buffers for USB-UART bridge */
-#ifdef CONFIG_DEBUGPROBE_CDC_UART
 RING_BUF_DECLARE(uart_tx_ringbuf, USB_TX_BUF_SIZE);
 RING_BUF_DECLARE(uart_rx_ringbuf, USB_RX_BUF_SIZE);
 #endif
@@ -91,63 +59,6 @@ static volatile bool usb_configured = false;
 /* GPIO device - defined in probe.c, declared extern in DAP_config.h */
 
 #ifdef CONFIG_USB_DEVICE_STACK_NEXT
-/*
- * USB Thread - Handles USB device tasks
- * Replaces: usb_thread() with xTaskCreate(usb_thread, "TUD", ...)
- */
-static void usb_thread_entry(void *p1, void *p2, void *p3)
-{
-    ARG_UNUSED(p1);
-    ARG_UNUSED(p2);
-    ARG_UNUSED(p3);
-
-    LOG_INF("USB thread started");
-
-    while (1) {
-        /* USB stack handling is done by Zephyr's workqueue
-         * We just need to yield and let the USB subsystem work */
-        k_sleep(K_MSEC(1));
-
-        /* Check USB configuration status */
-        /* This is handled by Zephyr's USB stack callbacks */
-    }
-}
-
-#ifdef CONFIG_DEBUGPROBE_DAP
-/*
- * DAP Thread - Processes DAP requests
- * Replaces: dap_thread() with xTaskCreate(dap_thread, "DAP", ...)
- */
-static void dap_thread_entry(void *p1, void *p2, void *p3)
-{
-    ARG_UNUSED(p1);
-    ARG_UNUSED(p2);
-    ARG_UNUSED(p3);
-
-    LOG_INF("DAP thread started");
-
-    while (1) {
-        /* Wait for DAP request */
-        if (k_sem_take(&dap_request_sem, K_FOREVER) == 0) {
-            uint32_t response_len;
-
-            led_dap_running(true);
-
-            /* Process DAP command */
-            response_len = dap_process_request(rx_data_buffer,
-                                               sizeof(rx_data_buffer),
-                                               tx_data_buffer,
-                                               sizeof(tx_data_buffer));
-
-            /* Signal response ready */
-            k_sem_give(&dap_response_sem);
-
-            led_dap_running(false);
-        }
-    }
-}
-#endif /* CONFIG_DEBUGPROBE_DAP */
-
 #ifdef CONFIG_DEBUGPROBE_CDC_UART
 /*
  * UART Thread - Handles CDC-UART bridge
@@ -211,12 +122,7 @@ static void suspend_threads(void)
         LOG_DBG("UART thread suspended");
     }
 #endif
-#ifdef CONFIG_DEBUGPROBE_DAP
-    if (dap_tid) {
-        k_thread_suspend(dap_tid);
-        LOG_DBG("DAP thread suspended");
-    }
-#endif
+    /* Note: DAP thread is managed by usbd_dap.c via semaphores */
 }
 
 /*
@@ -231,12 +137,7 @@ static void resume_threads(void)
         LOG_DBG("UART thread resumed");
     }
 #endif
-#ifdef CONFIG_DEBUGPROBE_DAP
-    if (dap_tid) {
-        k_thread_resume(dap_tid);
-        LOG_DBG("DAP thread resumed");
-    }
-#endif
+    /* Note: DAP thread is managed by usbd_dap.c via semaphores */
 }
 
 /* USB device context */
@@ -383,15 +284,12 @@ int main(void)
 
             /* Print welcome message with console test */
             printk("\n");
-            printk("========================================\n");
             printk("    DEBUGPROBE CONSOLE TEST\n");
-            printk("========================================\n");
             printk("Version: %s (Zephyr)\n", DEBUGPROBE_VERSION);
             printk("Serial: %s\n", serial);
             printk("\n");
             printk("If you see this message, the console is working!\n");
-            printk("Waiting 3 seconds before continuing...\n");
-            printk("========================================\n\n");
+            printk("Waiting 3 seconds before continuing, Flash LEDs...\n");
 
             /* Flash LEDs to show we're in console test mode */
             for (int i = 0; i < 6; i++) {
@@ -406,20 +304,10 @@ int main(void)
     /*
      * Create threads
      *
-     * In FreeRTOS this was:
-     *   xTaskCreate(usb_thread, "TUD", configMINIMAL_STACK_SIZE, NULL, TUD_TASK_PRIO, &tud_taskhandle);
-     *   xTaskCreate(cdc_thread, "UART", configMINIMAL_STACK_SIZE, NULL, UART_TASK_PRIO, &uart_taskhandle);
-     *   xTaskCreate(dap_thread, "DAP", configMINIMAL_STACK_SIZE, NULL, DAP_TASK_PRIO, &dap_taskhandle);
-     *
-     * In Zephyr we use k_thread_create():
+     * Note: USB handling is event-driven via Zephyr callbacks (no thread needed).
+     * DAP thread is created by usbd_dap.c when the USB class is initialized.
+     * Only UART thread is created here for CDC-UART bridge.
      */
-
-    /* USB thread always runs (manages USB stack) */
-    usb_tid = k_thread_create(&usb_thread_data, usb_thread_stack,
-                              K_THREAD_STACK_SIZEOF(usb_thread_stack),
-                              usb_thread_entry, NULL, NULL, NULL,
-                              USB_THREAD_PRIORITY, 0, K_NO_WAIT);
-    k_thread_name_set(usb_tid, "usb_thread");
 
 #ifdef CONFIG_DEBUGPROBE_CDC_UART
     /* UART thread starts suspended - resumed when USB is configured */
@@ -429,19 +317,8 @@ int main(void)
                                UART_THREAD_PRIORITY, 0, K_NO_WAIT);
     k_thread_name_set(uart_tid, "uart_thread");
     k_thread_suspend(uart_tid);
+    LOG_INF("UART thread created");
 #endif
-
-#ifdef CONFIG_DEBUGPROBE_DAP
-    /* DAP thread starts suspended - resumed when USB is configured */
-    dap_tid = k_thread_create(&dap_thread_data, dap_thread_stack,
-                              K_THREAD_STACK_SIZEOF(dap_thread_stack),
-                              dap_thread_entry, NULL, NULL, NULL,
-                              DAP_THREAD_PRIORITY, 0, K_NO_WAIT);
-    k_thread_name_set(dap_tid, "dap_thread");
-    k_thread_suspend(dap_tid);
-#endif
-
-    LOG_INF("All threads created");
 
     /* Resume threads if USB was already configured during init */
     if (usb_configured) {
@@ -460,35 +337,6 @@ int main(void)
 
     return 0;
 }
-
-#if defined(CONFIG_USB_DEVICE_STACK_NEXT) && defined(CONFIG_DEBUGPROBE_DAP)
-/*
- * DAP Request Handler
- * Called from USB HID/Bulk endpoint handler
- */
-void dap_handle_request(const uint8_t *request, uint32_t request_len,
-                        uint8_t *response, uint32_t *response_len)
-{
-    if (request_len > sizeof(rx_data_buffer)) {
-        request_len = sizeof(rx_data_buffer);
-    }
-
-    memcpy(rx_data_buffer, request, request_len);
-
-    /* Signal DAP thread */
-    k_sem_give(&dap_request_sem);
-
-    /* Wait for response */
-    if (k_sem_take(&dap_response_sem, K_MSEC(1000)) == 0) {
-        memcpy(response, tx_data_buffer, DAP_PACKET_SIZE);
-        *response_len = DAP_PACKET_SIZE;
-    } else {
-        /* Timeout - return error response */
-        response[0] = 0xFF;
-        *response_len = 1;
-    }
-}
-#endif /* CONFIG_USB_DEVICE_STACK_NEXT && CONFIG_DEBUGPROBE_DAP */
 
 #ifdef CONFIG_USB_DEVICE_STACK_NEXT
 /*
