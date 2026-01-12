@@ -73,4 +73,17 @@ void led_task(void);
  */
 void led_set_debounce(uint32_t ticks_ms);
 
+/**
+ * Signal SWD error condition (blinks D1 Red LED).
+ * Used to indicate wiring problems or repeated transfer failures.
+ * Blinks for a short duration then stops automatically.
+ */
+void led_swd_error(void);
+
+/**
+ * Clear SWD error indication.
+ * Called when SWD transfers start succeeding again.
+ */
+void led_swd_error_clear(void);
+
 #endif /* LED_H */

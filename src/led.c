@@ -60,6 +60,14 @@ static volatile uint32_t tx_debounce_count;
 static volatile uint32_t rx_debounce_count;
 static uint32_t debounce_ticks = LED_DEBOUNCE_MS;
 
+/* SWD error blink state (uses timestamps for timing) */
+#define SWD_ERROR_BLINK_MS     100   /* Blink toggle period */
+#define SWD_ERROR_TIMEOUT_MS   10000 /* Continue blinking 10s after last error */
+static volatile int64_t swd_error_last_failure;  /* Time of last failure */
+static volatile int64_t swd_error_last_toggle;
+static volatile bool swd_error_active;
+static volatile bool swd_error_led_state;
+
 /* LED initialization flag */
 static bool leds_initialized = false;
 
@@ -210,9 +218,62 @@ void led_task(void)
         }
     }
 #endif
+
+#if HAS_USB_LED
+    /* SWD error blinking on RED LED (timestamp-based for irregular calling) */
+    if (swd_error_active) {
+        int64_t now = k_uptime_get();
+        int64_t since_last_failure = now - swd_error_last_failure;
+
+        /* Check if timeout expired (no failures for 10s) */
+        if (since_last_failure >= SWD_ERROR_TIMEOUT_MS) {
+            swd_error_active = false;
+            swd_error_led_state = false;
+            gpio_pin_set_dt(&led_usb, 1);  /* Restore to ON (USB connected) */
+            LOG_INF("SWD error cleared after timeout");
+        } else if ((now - swd_error_last_toggle) >= SWD_ERROR_BLINK_MS) {
+            /* Toggle LED */
+            swd_error_led_state = !swd_error_led_state;
+            gpio_pin_set_dt(&led_usb, swd_error_led_state ? 1 : 0);
+            swd_error_last_toggle = now;
+        }
+    }
+#endif
 }
 
 void led_set_debounce(uint32_t ticks_ms)
 {
     debounce_ticks = ticks_ms;
+}
+
+void led_swd_error(void)
+{
+#if HAS_USB_LED
+    if (leds_initialized && gpio_is_ready_dt(&led_usb)) {
+        int64_t now = k_uptime_get();
+        swd_error_last_failure = now;  /* Reset/extend timeout */
+
+        if (!swd_error_active) {
+            /* First error - start blinking */
+            swd_error_last_toggle = now;
+            swd_error_active = true;
+            swd_error_led_state = false;
+            gpio_pin_set_dt(&led_usb, 0);  /* Start with LED OFF (blink) */
+            LOG_WRN("SWD error - check wiring");
+        }
+        /* If already active, just extends timeout via swd_error_last_failure */
+    }
+#endif
+}
+
+void led_swd_error_clear(void)
+{
+#if HAS_USB_LED
+    if (leds_initialized && swd_error_active) {
+        swd_error_active = false;
+        swd_error_led_state = false;
+        /* Restore USB connected state (LED should be on if USB is connected) */
+        gpio_pin_set_dt(&led_usb, 1);
+    }
+#endif
 }

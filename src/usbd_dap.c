@@ -106,6 +106,7 @@ static volatile uint32_t rb_max_pending = 0;       /* Max pending requests seen 
 /* Activity LED blinking state (when host doesn't control via DAP_HostStatus) */
 #define ACTIVITY_LED_TOGGLE_MS  125  /* Toggle every 125ms = 4 Hz blink */
 #define ACTIVITY_LED_TIMEOUT_MS 500  /* Turn off after 500ms idle */
+#define LED_TASK_INTERVAL_MS    50   /* LED task polling interval */
 static int64_t activity_led_last_toggle;  /* Last toggle time */
 static int64_t activity_led_last_activity; /* Last activity time */
 static bool activity_led_state;            /* Current LED state */
@@ -387,8 +388,11 @@ static void usb_dap_proc_entry(void *p1, void *p2, void *p3)
     LOG_INF("DAP thread started");
 
     while (1) {
-        /* Wait for work with timeout to handle activity LED turn-off */
-        int ret = k_sem_take(&usb_dap_proc_sem, K_MSEC(ACTIVITY_LED_TIMEOUT_MS));
+        /* Wait for work with short timeout for LED task processing */
+        int ret = k_sem_take(&usb_dap_proc_sem, K_MSEC(LED_TASK_INTERVAL_MS));
+
+        /* Process LED blinking timers (for error indication) */
+        led_task();
 
         /* Check for activity LED timeout (no commands for a while) */
         if (ret == -EAGAIN) {

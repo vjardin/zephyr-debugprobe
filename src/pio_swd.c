@@ -20,6 +20,7 @@
 #include "probe.h"
 #include "pio_swd.h"
 #include "dap.h"
+#include "led.h"
 
 LOG_MODULE_REGISTER(pio_swd, CONFIG_LOG_DEFAULT_LEVEL);
 
@@ -32,6 +33,11 @@ LOG_MODULE_REGISTER(pio_swd, CONFIG_LOG_DEFAULT_LEVEL);
 /* State tracking */
 static bool pio_swd_initialized = false;
 static uint32_t pio_program_offset = 0;
+
+/* Failure tracking for wiring error detection */
+#define SWD_FAILURE_THRESHOLD 3   /* Consecutive failures before error indication */
+static uint32_t swd_consecutive_failures = 0;
+static bool swd_error_indicated = false;
 
 /*
  * Format command with program offset applied
@@ -447,6 +453,37 @@ static inline uint32_t parity32(uint32_t val)
 }
 
 /*
+ * Track transfer result for wiring error detection
+ */
+static inline void track_transfer_result(uint8_t ack)
+{
+    if (ack == DAP_TRANSFER_OK) {
+        /* Success - reset failure counter */
+        if (swd_consecutive_failures > 0) {
+            LOG_DBG("SWD: success after %u failures", swd_consecutive_failures);
+            swd_consecutive_failures = 0;
+            if (swd_error_indicated) {
+                swd_error_indicated = false;
+                led_swd_error_clear();
+            }
+        }
+    } else if (ack != DAP_TRANSFER_WAIT) {
+        /* Failure (but not WAIT which is normal during busy) */
+        swd_consecutive_failures++;
+
+        if (swd_consecutive_failures >= SWD_FAILURE_THRESHOLD) {
+            if (!swd_error_indicated) {
+                LOG_WRN("SWD: %u consecutive failures - possible wiring issue",
+                        swd_consecutive_failures);
+                swd_error_indicated = true;
+            }
+            /* Call on every failure to extend the blink timeout */
+            led_swd_error();
+        }
+    }
+}
+
+/*
  * Perform complete SWD transfer
  *
  * Implements the full SWD protocol matching original debugprobe:
@@ -528,6 +565,7 @@ uint8_t pio_swd_transfer(uint32_t request, uint32_t *data)
             pio_swd_write_bits(idle, 0);
         }
 
+        track_transfer_result(ack);
         return (uint8_t)ack;
     }
 
@@ -543,6 +581,7 @@ uint8_t pio_swd_transfer(uint32_t request, uint32_t *data)
             /* Dummy write data phase */
             pio_swd_write_bits(33, 0);
         }
+        track_transfer_result(ack);
         return (uint8_t)ack;
     }
 
@@ -550,6 +589,7 @@ uint8_t pio_swd_transfer(uint32_t request, uint32_t *data)
     pio_swd_read_bits(turnaround + 32 + 1);  /* Dummy read data phase */
     pio_swd_hiz_clocks(turnaround);
 
+    track_transfer_result(ack);
     return (uint8_t)ack;
 }
 
@@ -661,6 +701,13 @@ static int cmd_pio_status(const struct shell *sh, size_t argc, char **argv)
                     gpio_get(PROBE_SWDIR_PIN) ? "input" : "output");
     }
 #endif
+
+    /* Show failure tracking status */
+    shell_print(sh, "  Consecutive failures: %u (threshold: %d)",
+                swd_consecutive_failures, SWD_FAILURE_THRESHOLD);
+    if (swd_error_indicated) {
+        shell_print(sh, "  ERROR: Wiring problem detected!");
+    }
 
     return 0;
 }

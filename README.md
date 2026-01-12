@@ -483,6 +483,112 @@ Key findings:
 - Zephyr port achieves ~92% of original debugprobe throughput
 - Both implementations are USB-limited at higher SWD frequencies
 
+## Troubleshooting
+
+### LED Indicators (Debug Probe Hardware)
+
+The Debug Probe has 5 LEDs that indicate system status:
+
+| LED | Color  | GPIO | Function                   |
+|-----|--------|------|----------------------------|
+| D1  | Red    | GP2  | USB connected / SWD error  |
+| D2  | Green  | GP7  | UART RX activity           |
+| D3  | Yellow | GP8  | UART TX activity           |
+| D4  | Green  | GP15 | DAP connected              |
+| D5  | Yellow | GP16 | DAP running/activity       |
+
+### SWD LED Behavior
+
+D1 Red LED - USB / Error Status:
+
+| State                          | LED Behavior                  |
+|--------------------------------|-------------------------------|
+| USB connected                  | Steady ON                     |
+| USB disconnected               | OFF                           |
+| SWD wiring error (3+ failures) | Blinking (5 Hz)               |
+| Error blinking continues       | Until 10s after last failure  |
+| Successful SWD transfer        | Stops blinking, steady ON     |
+
+D4 Green LED - DAP Connected:
+
+| State                      | LED Behavior |
+|----------------------------|--------------|
+| Host debugger connected    | ON           |
+| Host debugger disconnected | OFF          |
+
+Controlled by host via CMSIS-DAP `DAP_HostStatus` command.
+
+D5 Yellow LED - DAP Activity:
+
+| State                          | LED Behavior   |
+|--------------------------------|----------------|
+| Host controls LED (rare)       | As commanded   |
+| DAP commands being processed   | Blinking (4 Hz)|
+| Idle (no activity for 500ms)   | OFF            |
+
+Most debuggers (pyocd, OpenOCD) don't send activity status, so the firmware
+automatically blinks during SWD operations.
+
+### Diagnosing Connection Problems
+
+Normal operation (target connected):
+
+```
+D1 Red:    ON (steady)     - USB connected
+D4 Green:  ON              - DAP connected
+D5 Yellow: Blinking        - Activity
+```
+
+Wiring problem or no target:
+
+```
+D1 Red:    BLINKING        - Error detected!
+D4 Green:  ON              - Host thinks connected
+D5 Yellow: Blinking        - Still attempting
+```
+
+USB not connected:
+
+```
+D1 Red:    OFF
+D4 Green:  OFF
+D5 Yellow: OFF
+```
+
+### Common Issues
+
+Red LED blinking after pyocd command:
+
+- Check SWD wiring (SWCLK, SWDIO, GND)
+- Verify target is powered
+- Try reducing SWD clock: `pyocd cmd -f 1000000 ...`
+- Check `pio status` in shell for failure count
+
+No response from target:
+
+- Ensure SWCLK and SWDIO are not swapped
+- Check for loose connections
+- Verify target voltage compatibility (1.8V-3.3V)
+
+Intermittent errors at high frequencies:
+
+- Reduce SWD clock frequency
+- Use shorter cables
+- Check signal integrity
+
+### Shell Diagnostics
+
+Use the shell commands to diagnose issues:
+
+```
+debugprobe:~$ pio status
+  Consecutive failures: 0 (threshold: 3)
+
+debugprobe:~$ dap stats
+
+debugprobe:~$ dap pins
+```
+
 ## Differences from Original
 
 1. RTOS: Zephyr instead of FreeRTOS
