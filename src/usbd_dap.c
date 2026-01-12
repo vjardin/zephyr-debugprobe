@@ -19,6 +19,7 @@
 #include "probe_config.h"
 #include "DAP_config.h"  /* For ID_DAP_QueueCommands/ExecuteCommands */
 #include "dap.h"
+#include "led.h"
 
 LOG_MODULE_REGISTER(usbd_dap, LOG_LEVEL_INF);
 
@@ -101,6 +102,13 @@ static volatile uint32_t usb_in_seq = 0;           /* IN packet sequence number 
 static volatile uint32_t rb_req_full_count = 0;    /* Request buffer was full */
 static volatile uint32_t rb_resp_empty_count = 0;  /* Response buffer was empty */
 static volatile uint32_t rb_max_pending = 0;       /* Max pending requests seen */
+
+/* Activity LED blinking state (when host doesn't control via DAP_HostStatus) */
+#define ACTIVITY_LED_TOGGLE_MS  125  /* Toggle every 125ms = 4 Hz blink */
+#define ACTIVITY_LED_TIMEOUT_MS 500  /* Turn off after 500ms idle */
+static int64_t activity_led_last_toggle;  /* Last toggle time */
+static int64_t activity_led_last_activity; /* Last activity time */
+static bool activity_led_state;            /* Current LED state */
 
 /* Detailed packet trace (ring buffer of last 64 events) */
 #define TRACE_SIZE 64
@@ -379,8 +387,21 @@ static void usb_dap_proc_entry(void *p1, void *p2, void *p3)
     LOG_INF("DAP thread started");
 
     while (1) {
-        /* Wait for work (request available or IN complete) */
-        k_sem_take(&usb_dap_proc_sem, K_FOREVER);
+        /* Wait for work with timeout to handle activity LED turn-off */
+        int ret = k_sem_take(&usb_dap_proc_sem, K_MSEC(ACTIVITY_LED_TIMEOUT_MS));
+
+        /* Check for activity LED timeout (no commands for a while) */
+        if (ret == -EAGAIN) {
+            /* Timeout - check if we should turn off activity LED */
+            if (activity_led_state && !dap_get_running_led_state()) {
+                int64_t now = k_uptime_get();
+                if ((now - activity_led_last_activity) >= ACTIVITY_LED_TIMEOUT_MS) {
+                    activity_led_state = false;
+                    led_dap_running(false);
+                }
+            }
+            continue;
+        }
 
         /* Process all pending requests - matching original debugprobe pattern */
         while (!buffer_empty(&usb_request_buf)) {
@@ -470,6 +491,21 @@ static void usb_dap_proc_entry(void *p1, void *p2, void *p3)
                 }
                 usb_request_buf.wasFull = false;
                 k_sched_unlock();
+            }
+
+            /* Activity LED: blink yellow LED during processing if host
+             * hasn't set it via DAP_HostStatus (e.g., pyocd doesn't).
+             * Use time-based toggling for visible ~4 Hz blink. */
+            if (!dap_get_running_led_state()) {
+                int64_t now = k_uptime_get();
+                activity_led_last_activity = now;
+
+                /* Toggle LED if enough time has passed */
+                if ((now - activity_led_last_toggle) >= ACTIVITY_LED_TOGGLE_MS) {
+                    activity_led_state = !activity_led_state;
+                    led_dap_running(activity_led_state);
+                    activity_led_last_toggle = now;
+                }
             }
 
             /* Now process command from local buffer */

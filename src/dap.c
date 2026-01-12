@@ -1759,6 +1759,14 @@ uint8_t dap_get_swd_data_phase(void)
 }
 
 /*
+ * Get host-controlled running LED state
+ */
+bool dap_get_running_led_state(void)
+{
+    return led_running_state;
+}
+
+/*
  * Shell Commands for DAP diagnostics
  */
 

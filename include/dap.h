@@ -86,3 +86,13 @@ uint8_t dap_get_swd_turnaround(void);
  * @return 1 if data phase should be generated, 0 otherwise
  */
 uint8_t dap_get_swd_data_phase(void);
+
+/**
+ * @brief Get host-controlled running LED state
+ *
+ * Returns the running LED state as set by the host via DAP_HostStatus.
+ * Used by USB layer to decide whether to show activity indication.
+ *
+ * @return true if host set running LED on, false otherwise
+ */
+bool dap_get_running_led_state(void);
