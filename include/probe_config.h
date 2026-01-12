@@ -121,7 +121,10 @@
 
 /* DAP Configuration */
 #ifndef CONFIG_DEBUGPROBE_DAP_CLOCK_HZ
-#define DAP_DEFAULT_SWJ_CLOCK   1000000
+/* Default SWD clock: 10 MHz works reliably with most targets.
+ * RP2040 PIO maximum: ~24 MHz (125 MHz sys_clk / 4 cycles per bit / ~1.3 margin).
+ * Actual limit depends on target, wiring, and signal integrity. */
+#define DAP_DEFAULT_SWJ_CLOCK   10000000
 #else
 #define DAP_DEFAULT_SWJ_CLOCK   CONFIG_DEBUGPROBE_DAP_CLOCK_HZ
 #endif
